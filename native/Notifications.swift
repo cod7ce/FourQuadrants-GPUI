@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 struct ReminderDocument: Decodable {
     let schemaVersion: Int
