@@ -26,6 +26,9 @@ impl TaskDialog {
                     .and_then(|editor| workspace.doc.task(&editor.id))
                     .cloned();
                 if let (Some(editor), Some(task)) = (&mut workspace.editor, task) {
+                    if workspace.doc.settings.language != this.settings.language {
+                        editor.refresh_placeholders(&workspace.doc.settings, window, cx);
+                    }
                     editor.refresh_pristine(&task, window, cx);
                 } else {
                     workspace.dismiss_task_dialog(window, cx);
@@ -249,7 +252,13 @@ impl Workspace {
                                 editor.focus_title(window, cx);
                             }
                         } else if let Some(task) = workspace.doc.task(&id) {
-                            workspace.editor = Some(TaskEditor::new(task, blank_title, window, cx));
+                            workspace.editor = Some(TaskEditor::new(
+                                task,
+                                blank_title,
+                                &workspace.doc.settings,
+                                window,
+                                cx,
+                            ));
                             workspace.selected = Some(id.clone());
                         }
                         window.activate_window();
@@ -314,7 +323,13 @@ impl Workspace {
                     owner.update(cx, |workspace, cx| {
                         workspace.task_dialog = Some(window.window_handle());
                         if let Some(task) = workspace.doc.task(&id) {
-                            workspace.editor = Some(TaskEditor::new(task, blank_title, window, cx));
+                            workspace.editor = Some(TaskEditor::new(
+                                task,
+                                blank_title,
+                                &workspace.doc.settings,
+                                window,
+                                cx,
+                            ));
                             workspace.selected = Some(id);
                         }
                         cx.notify();

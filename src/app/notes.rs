@@ -39,7 +39,7 @@ impl NoteEditor {
             converted: false,
             conversion_error: None,
             picking_image: false,
-            mode: NoteMode::Split,
+            mode: NoteMode::Preview,
         }
     }
 }
@@ -273,7 +273,10 @@ impl Workspace {
         // InputState::set_value keeps its undo history; each loaded note needs a fresh input.
         self.week_text = field(
             source,
-            "写下想法… 支持 Markdown、粘贴或拖入图片 / Write Markdown…",
+            self.t(
+                "写下想法… 支持 Markdown、粘贴或拖入图片",
+                "Write Markdown, paste or drop images…",
+            ),
             true,
             window,
             cx,
@@ -582,18 +585,18 @@ impl Workspace {
             .items_center()
             .gap_2()
             .child(modes)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(if unsaved { p.quadrant[0] } else { p.muted })
-                    .child(if self.note_editor.loading {
-                        self.t("正在整理旧笔记…", "Preparing note…")
-                    } else if unsaved {
-                        self.t("未保存", "Unsaved")
-                    } else {
-                        self.t("已保存", "Saved")
-                    }),
-            )
+            .when(self.note_editor.loading || unsaved, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(if unsaved { p.quadrant[0] } else { p.muted })
+                        .child(if self.note_editor.loading {
+                            self.t("正在整理旧笔记…", "Preparing note…")
+                        } else {
+                            self.t("未保存", "Unsaved")
+                        }),
+                )
+            })
             .when(unsaved, |el| {
                 el.child(
                     chip("retry-save-week-note", self.t("重试", "Retry"), p)

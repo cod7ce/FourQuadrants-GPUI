@@ -822,14 +822,19 @@ impl Document {
         Ok(())
     }
 
-    /// Schedules a task on a specific day: sets due date to midnight UTC and
-    /// moves the whole subtree into that day's week.
+    /// Schedules a task at 18:30 local time on the chosen day and moves the
+    /// whole subtree into that day's week.
     pub fn schedule(&mut self, id: &str, date: NaiveDate) {
         let idx = match self.index_of(id) {
             Some(idx) => idx,
             None => return,
         };
-        let due = local_midnight_utc(date);
+        let naive = date.and_hms_opt(18, 30, 0).expect("18:30 is always valid");
+        let due = Local
+            .from_local_datetime(&naive)
+            .earliest()
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(|| naive.and_utc());
         self.tasks[idx].due_date = Some(due);
         let week = week_start(date);
         self.tasks[idx].week_start = week;
@@ -1630,6 +1635,7 @@ impl Settings {
     }
 }
 
+#[cfg(test)]
 fn local_midnight_utc(date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_hms_opt(0, 0, 0).expect("midnight is always valid");
     Local
@@ -2231,12 +2237,22 @@ mod tests {
     fn schedule_sets_due_and_moves_subtree() {
         let (mut doc, parent) = doc_with_task("parent");
         let child = link_child(&mut doc, &parent, "child");
-        let day = date(2026, 7, 15);
-        doc.schedule(&parent, day);
-        assert_eq!(doc.task(&parent).unwrap().week_start, date(2026, 7, 13));
-        assert_eq!(doc.task(&child).unwrap().week_start, date(2026, 7, 13));
-        assert_eq!(doc.task(&parent).unwrap().agenda_date(), Some(day));
-        assert_eq!(doc.task(&child).unwrap().due_date, None);
+        for day in [date(2026, 7, 15), date(2026, 11, 1), date(2027, 1, 4)] {
+            doc.schedule(&parent, day);
+            assert_eq!(doc.task(&parent).unwrap().week_start, week_start(day));
+            assert_eq!(doc.task(&child).unwrap().week_start, week_start(day));
+            assert_eq!(doc.task(&parent).unwrap().agenda_date(), Some(day));
+            assert_eq!(
+                doc.task(&parent)
+                    .unwrap()
+                    .due_date
+                    .unwrap()
+                    .with_timezone(&Local)
+                    .naive_local(),
+                day.and_hms_opt(18, 30, 0).unwrap()
+            );
+            assert_eq!(doc.task(&child).unwrap().due_date, None);
+        }
     }
 
     #[test]

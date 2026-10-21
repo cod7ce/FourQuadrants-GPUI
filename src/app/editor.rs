@@ -132,7 +132,13 @@ impl TaskDraft {
 }
 
 impl TaskEditor {
-    pub fn new(task: &Task, blank_title: bool, window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(
+        task: &Task,
+        blank_title: bool,
+        settings: &model::Settings,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         // A freshly created task is persisted as "Untitled task" so it survives an
         // immediate close, but the editor starts empty with that title as placeholder:
         // typing directly renames it without relying on asynchronous SelectAll dispatch.
@@ -148,14 +154,14 @@ impl TaskEditor {
             title: field(title_value, task.title.clone(), true, window, cx),
             issue: field(
                 task.issue_key.clone().unwrap_or_default(),
-                "工单编号 / Issue key",
+                theme::tr(settings, "工单编号", "Issue key"),
                 false,
                 window,
                 cx,
             ),
             notes: field(
                 task.notes.clone(),
-                "备注 / Plain text notes",
+                theme::tr(settings, "备注", "Plain text notes"),
                 true,
                 window,
                 cx,
@@ -169,12 +175,18 @@ impl TaskEditor {
             }),
             links: field(
                 task.links.join("\n"),
-                "每行一个链接 / One URL per line",
+                theme::tr(settings, "每行一个链接", "One URL per line"),
                 true,
                 window,
                 cx,
             ),
-            progress: field("", "添加进展 / Add progress", true, window, cx),
+            progress: field(
+                "",
+                theme::tr(settings, "添加进展", "Add progress"),
+                true,
+                window,
+                cx,
+            ),
             baseline,
             original_title: task.title.clone(),
             _subscriptions: Vec::new(),
@@ -202,6 +214,24 @@ impl TaskEditor {
             }));
         this.focus_title(window, cx);
         this
+    }
+
+    pub(super) fn refresh_placeholders(
+        &self,
+        settings: &model::Settings,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for (input, zh, en) in [
+            (&self.issue, "工单编号", "Issue key"),
+            (&self.notes, "备注", "Plain text notes"),
+            (&self.links, "每行一个链接", "One URL per line"),
+            (&self.progress, "添加进展", "Add progress"),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(theme::tr(settings, zh, en), window, cx);
+            });
+        }
     }
 
     pub(super) fn focus_title(&self, window: &mut Window, cx: &mut App) {

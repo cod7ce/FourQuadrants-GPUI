@@ -244,7 +244,7 @@ pub struct SettingsEditor {
     rule_issue: SliderField,
     rule_title: SliderField,
     rule_link: SliderField,
-    rule_tag: Entity<InputState>,
+    rule_tag: String,
     selected_rule: Option<ParseRule>,
     preview: Entity<InputState>,
     preview_result: Option<ParsedTaskInput>,
@@ -252,7 +252,7 @@ pub struct SettingsEditor {
     preview_pending: bool,
     preview_signature: Option<String>,
     preview_version: u64,
-    builtin_tag: Entity<InputState>,
+    builtin_tag: String,
     last_settings: Settings,
     last_dark: bool,
     picking_background: bool,
@@ -267,7 +267,7 @@ impl SettingsEditor {
             active_tab: SettingsTab::default(),
             font_family: field(
                 s.font_family.clone(),
-                "系统默认 / System font",
+                theme::tr(s, "系统默认", "System font"),
                 false,
                 window,
                 cx,
@@ -284,19 +284,25 @@ impl SettingsEditor {
             background_opacity: NumberSetting::BackgroundOpacity.slider(s, dark, cx),
             background_blur: NumberSetting::BackgroundBlur.slider(s, dark, cx),
             background_scrim: NumberSetting::BackgroundScrim.slider(s, dark, cx),
-            tag_name: field("", "标签名称 / Tag name", false, window, cx),
+            tag_name: field("", theme::tr(s, "标签名称", "Tag name"), false, window, cx),
             tag_color: field("#8B7DD8", "#RRGGBB", false, window, cx),
             selected_tag: None,
-            rule_name: field("", "规则名称 / Rule name", false, window, cx),
-            rule_pattern: field("", "正则表达式 / Regular expression", true, window, cx),
+            rule_name: field("", theme::tr(s, "规则名称", "Rule name"), false, window, cx),
+            rule_pattern: field(
+                "",
+                theme::tr(s, "正则表达式", "Regular expression"),
+                true,
+                window,
+                cx,
+            ),
             rule_issue: SliderField::new(0., (0., MAX_CAPTURE_GROUP as f32, 1.), cx),
             rule_title: SliderField::new(1., (0., MAX_CAPTURE_GROUP as f32, 1.), cx),
             rule_link: SliderField::new(0., (0., MAX_CAPTURE_GROUP as f32, 1.), cx),
-            rule_tag: field("", "匹配后标签 / Tag name", false, window, cx),
+            rule_tag: String::new(),
             selected_rule: None,
             preview: field(
                 "ABC-123 修复登录 https://example.com/issue/123",
-                "粘贴样例 / Paste a sample",
+                theme::tr(s, "粘贴样例", "Paste a sample"),
                 true,
                 window,
                 cx,
@@ -306,13 +312,7 @@ impl SettingsEditor {
             preview_pending: false,
             preview_signature: None,
             preview_version: 0,
-            builtin_tag: field(
-                s.builtin_parse_tag_name.clone(),
-                "内置解析标签 / Built-in parser tag",
-                false,
-                window,
-                cx,
-            ),
+            builtin_tag: s.builtin_parse_tag_name.clone(),
             last_settings: s.clone(),
             last_dark: dark,
             picking_background: false,
@@ -327,9 +327,7 @@ impl SettingsEditor {
             self.tag_color.clone(),
             self.rule_name.clone(),
             self.rule_pattern.clone(),
-            self.rule_tag.clone(),
             self.preview.clone(),
-            self.builtin_tag.clone(),
         ]
     }
 
@@ -359,21 +357,24 @@ impl SettingsEditor {
     fn sync(&mut self, doc: &Document, window: &mut Window, cx: &mut App) {
         let old = &self.last_settings;
         let new = &doc.settings;
-        for (changed, input, value) in [
-            (
-                old.font_family != new.font_family,
-                &self.font_family,
-                new.font_family.clone(),
-            ),
-            (
-                old.builtin_parse_tag_name != new.builtin_parse_tag_name,
-                &self.builtin_tag,
-                new.builtin_parse_tag_name.clone(),
-            ),
-        ] {
-            if changed {
-                set_input(input, value, window, cx);
+        if old.language != new.language {
+            for (input, zh, en) in [
+                (&self.font_family, "系统默认", "System font"),
+                (&self.tag_name, "标签名称", "Tag name"),
+                (&self.rule_name, "规则名称", "Rule name"),
+                (&self.rule_pattern, "正则表达式", "Regular expression"),
+                (&self.preview, "粘贴样例", "Paste a sample"),
+            ] {
+                input.update(cx, |input, cx| {
+                    input.set_placeholder(theme::tr(new, zh, en), window, cx);
+                });
             }
+        }
+        if old.font_family != new.font_family {
+            set_input(&self.font_family, new.font_family.clone(), window, cx);
+        }
+        if old.builtin_parse_tag_name != new.builtin_parse_tag_name {
+            self.builtin_tag = new.builtin_parse_tag_name.clone();
         }
         let dark = Palette::is_dark(new, window.appearance());
         for (kind, slider) in self.appearance_sliders() {
@@ -429,15 +430,13 @@ impl SettingsEditor {
                             &self.rule_pattern,
                             current.pattern.clone(),
                         ),
-                        (
-                            current.tag_name != selected.tag_name,
-                            &self.rule_tag,
-                            current.tag_name.clone(),
-                        ),
                     ] {
                         if changed {
                             set_input_if_changed(input, value, window, cx);
                         }
+                    }
+                    if current.tag_name != selected.tag_name {
+                        self.rule_tag = current.tag_name.clone();
                     }
                     for (changed, slider, value) in [
                         (
@@ -494,7 +493,6 @@ impl SettingsEditor {
         for (input, value) in [
             (&self.rule_name, draft.name),
             (&self.rule_pattern, draft.pattern),
-            (&self.rule_tag, draft.tag_name),
         ] {
             set_input(input, value, window, cx);
         }
@@ -505,6 +503,7 @@ impl SettingsEditor {
         ] {
             slider.set_value(value as f32, window, cx);
         }
+        self.rule_tag = draft.tag_name;
         self.selected_rule = rule;
     }
 
@@ -535,7 +534,7 @@ impl SettingsEditor {
             issue_group: group(&self.rule_issue)?,
             title_group: group(&self.rule_title)?,
             link_group: group(&self.rule_link)?,
-            tag_name: input_text(&self.rule_tag, cx).trim().into(),
+            tag_name: self.rule_tag.clone(),
         })
     }
 }
@@ -1024,9 +1023,7 @@ impl Workspace {
 
     fn refresh_rule_preview(&mut self, s: &Settings, window: &mut Window, cx: &mut Context<Self>) {
         let sample = input_text(&self.settings_editor.preview, cx);
-        let builtin = input_text(&self.settings_editor.builtin_tag, cx)
-            .trim()
-            .to_owned();
+        let builtin = self.settings_editor.builtin_tag.clone();
         let pattern = input_text(&self.settings_editor.rule_pattern, cx);
         let selected_id = self
             .settings_editor
@@ -1414,17 +1411,7 @@ impl Workspace {
                         doc.settings.language = code.into();
                         Ok(())
                     });
-                    this.search.update(cx, |input, cx| {
-                        input.set_placeholder(
-                            if code == "zh" {
-                                "搜索任务"
-                            } else {
-                                "Search tasks"
-                            },
-                            window,
-                            cx,
-                        );
-                    });
+                    this.apply_theme(window, cx);
                 })),
             );
         }
@@ -1886,6 +1873,96 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn rule_tag_selector(&self, builtin: bool, p: Palette, cx: &mut Context<Self>) -> Div {
+        let selected = if builtin {
+            &self.settings_editor.builtin_tag
+        } else {
+            &self.settings_editor.rule_tag
+        };
+        let no_tag = self.t("无标签", "No tag").to_owned();
+        let label = if selected.is_empty() {
+            no_tag.clone()
+        } else {
+            selected.clone()
+        };
+        let id = if builtin {
+            "builtin-rule-tag"
+        } else {
+            "custom-rule-tag"
+        };
+        let mut tags = self.doc.tags.iter().collect::<Vec<_>>();
+        tags.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+        let mut choices = vec![(String::new(), no_tag)];
+        choices.extend(
+            tags.into_iter()
+                .map(|tag| (tag.name.clone(), tag.name.clone())),
+        );
+        // Keep imported rule tags visible until the user explicitly replaces them.
+        if !selected.is_empty() && !choices.iter().any(|(name, _)| name == selected) {
+            choices.push((selected.clone(), selected.clone()));
+        }
+        let selected = selected.clone();
+        let workspace = cx.entity().downgrade();
+        div()
+            .flex_1()
+            .min_w(px(160.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(self.t("匹配后标签", "Tag after match")),
+            )
+            .child(
+                Popover::new(id)
+                    .trigger(
+                        Button::new(id)
+                            .outline()
+                            .w_full()
+                            .h(px(32.))
+                            .justify_start()
+                            .label(label)
+                            .icon(IconName::ChevronDown),
+                    )
+                    .content(move |_, _, cx| {
+                        let mut list = div()
+                            .id("rule-tag-options")
+                            .w(px(240.))
+                            .max_h(px(280.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1();
+                        for (index, (name, label)) in choices.iter().enumerate() {
+                            let workspace = workspace.clone();
+                            let name = name.clone();
+                            list = list.child(
+                                Button::new(("rule-tag-option", index))
+                                    .ghost()
+                                    .w_full()
+                                    .justify_start()
+                                    .label(label.clone())
+                                    .selected(name == selected)
+                                    .on_click(cx.listener(move |popover, _, window, cx| {
+                                        let _ = workspace.update(cx, |this, cx| {
+                                            if builtin {
+                                                this.settings_editor.builtin_tag = name.clone();
+                                            } else {
+                                                this.settings_editor.rule_tag = name.clone();
+                                            }
+                                            cx.notify();
+                                        });
+                                        popover.dismiss(window, cx);
+                                    })),
+                            );
+                        }
+                        list
+                    }),
+            )
+    }
+
     fn settings_rules(&self, s: &Settings, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().flex().flex_col().gap_2();
         for (index, rule) in s.parse_rules.iter().enumerate() {
@@ -2012,10 +2089,22 @@ impl Workspace {
                 .to_owned()
         };
         section(self.t("粘贴解析规则", "Paste parsing rules"), self.t("按顺序使用首个有结果的规则，否则使用内置解析。捕获组从 1 开始，0 表示忽略。预览由 Foundation 执行，无法编译的规则会被跳过。", "The first rule with a result wins; otherwise built-in parsing applies. Groups start at 1; 0 skips a field. Preview runs in Foundation; rules it cannot compile are skipped."), p)
+            .child(div().flex().flex_col().gap_3().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle)
+                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(self.t("默认匹配规则", "Default matching rule")))
+                .child(div().text_xs().text_color(p.muted).child(self.t("未命中自定义规则时使用，自动识别标题、工单和链接。选择“无标签”则不添加标签。", "Used when no custom rule matches; detects the title, issue and links. Choose “No tag” to add no tag.")))
+                .child(div().flex().flex_wrap().items_end().gap_3()
+                    .child(self.rule_tag_selector(true, p, cx))
+                    .child(chip("settings-builtin-tag-save", self.t("保存默认标签", "Save default tag").to_owned(), p)
+                        .bg(p.selected)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let name = this.settings_editor.builtin_tag.clone();
+                            this.change(cx, |doc| { doc.settings.builtin_parse_tag_name = name; Ok(()) });
+                        })))))
+            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(self.t("自定义规则", "Custom rules")))
             .child(list)
             .child(div().flex().flex_wrap().gap_3()
                 .child(labeled(self.t("规则名称", "Rule name"), &self.settings_editor.rule_name, p))
-                .child(labeled(self.t("匹配后标签名", "Tag name after match"), &self.settings_editor.rule_tag, p)))
+                .child(self.rule_tag_selector(false, p, cx)))
             .child(div().flex().flex_col().gap_2()
                 .child(div().text_xs().text_color(p.muted).child(self.t("正则表达式", "Regular expression").to_owned()))
                 .child(Input::new(&self.settings_editor.rule_pattern).small().h(px(84.))))
@@ -2028,13 +2117,6 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| this.save_settings_rule(window, cx))))
                 .child(chip("settings-rule-new", self.t("新建", "New").to_owned(), p)
                     .on_click(cx.listener(|this, _, window, cx| { this.settings_editor.load_rule(None, window, cx); cx.notify(); }))))
-            .child(div().flex().flex_wrap().items_end().gap_3()
-                .child(labeled(self.t("内置解析默认标签", "Default tag for built-in parser"), &self.settings_editor.builtin_tag, p))
-                .child(chip("settings-builtin-tag-save", self.t("保存", "Save").to_owned(), p)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let name = input_text(&this.settings_editor.builtin_tag, cx).trim().to_owned();
-                        this.change(cx, |doc| { doc.settings.builtin_parse_tag_name = name; Ok(()) });
-                    }))))
             .child(div().border_t_1().border_color(p.border).pt_4().flex().flex_col().gap_3()
                 .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(self.t("实时预览（包含未保存的草稿）", "Live preview (includes unsaved draft)").to_owned()))
                 .child(Input::new(&self.settings_editor.preview).small().h(px(85.)))
@@ -2080,9 +2162,11 @@ impl Workspace {
             p,
         )
         .child(div().flex().items_center().gap_4().py_2()
-            .child(div().size(px(56.)).rounded(px(12.)).bg(p.accent.opacity(0.12)).text_color(p.accent).text_size(px(30.)).flex().items_center().justify_center().child("肆"))
+            .child(img(ImageSource::Resource(Resource::Embedded("app-icon.png".into()))).size(px(64.)).flex_shrink_0().object_fit(ObjectFit::Contain))
             .child(div().flex().flex_col().gap_1()
-                .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("FourQuadrants GPUI"))
+                .child(div().flex().flex_wrap().items_center().gap_2()
+                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.t("肆", "Four Quadrants")))
+                    .child(div().px_2().py(px(2.)).rounded(px(4.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(10.)).text_color(p.muted).child("GPUI")))
                 .child(div().text_size(px(13.)).text_color(p.muted).child(format!("{} {}", self.t("版本", "Version"), env!("CARGO_PKG_VERSION"))))))
         .child(div().flex().flex_col().gap_2().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle)
             .child(div().font_weight(FontWeight::MEDIUM).child(self.t(zh, en).to_owned()))

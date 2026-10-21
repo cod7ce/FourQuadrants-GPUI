@@ -547,7 +547,11 @@ impl Workspace {
                 .find(|n| n.week_start == week)
                 .map(|n| n.editable_text().to_string())
                 .unwrap_or_default(),
-            "写下想法… 支持 Markdown、粘贴或拖入图片 / Write Markdown…",
+            theme::tr(
+                &doc.settings,
+                "写下想法… 支持 Markdown、粘贴或拖入图片",
+                "Write Markdown, paste or drop images…",
+            ),
             true,
             window,
             cx,
@@ -758,7 +762,7 @@ impl Workspace {
         theme.colors.secondary_hover = palette.hover;
         theme.colors.secondary_foreground = palette.text;
         theme.colors.muted = palette.hover;
-        theme.colors.muted_foreground = palette.muted;
+        theme.colors.muted_foreground = palette.muted.opacity(0.75);
         theme.colors.popover = Hsla {
             a: 1.,
             ..palette.bg
@@ -779,6 +783,18 @@ impl Workspace {
             self.doc.settings.font_family.clone().into()
         };
         theme.font_size = px(self.doc.settings.font_size);
+        for (input, zh, en) in [
+            (&self.search, "搜索任务", "Search tasks"),
+            (
+                &self.week_text,
+                "写下想法… 支持 Markdown、粘贴或拖入图片",
+                "Write Markdown, paste or drop images…",
+            ),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(theme::tr(&self.doc.settings, zh, en), window, cx);
+            });
+        }
         if let Err(error) = crate::native::configure_window_material(window, &self.doc.settings) {
             self.error = Some(format!("{error:#}"));
         }
@@ -1700,17 +1716,12 @@ impl Workspace {
                 "总览",
                 "Overview",
             ),
-            (
-                Page::Agenda,
-                Icon::new(AppIcon::ThisWeek),
-                "周议程",
-                "Week agenda",
-            ),
+            (Page::Agenda, Icon::new(AppIcon::ThisWeek), "周历", "Weekly"),
             (
                 Page::Calendar,
                 Icon::new(AppIcon::Calendar),
-                "日历",
-                "Calendar",
+                "月历",
+                "Monthly",
             ),
             (Page::Notes, Icon::new(AppIcon::Notes), "笔记", "Notes"),
         ];
@@ -1959,11 +1970,11 @@ impl Workspace {
                         15.
                     })))
                     .when(!collapsed, |el| {
-                        el.child(self.t("设置与外观", "Settings").to_string())
+                        el.child(self.t("设置", "Settings").to_string())
                             .child(div().flex_1())
                     })
                     .when(collapsed, |el| {
-                        let label = self.t("设置与外观 · ⌘,", "Settings · ⌘,").to_owned();
+                        let label = self.t("设置 · ⌘,", "Settings · ⌘,").to_owned();
                         el.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -2008,7 +2019,7 @@ impl Workspace {
                     })
                 })),
             )
-            .when(self.page != Page::All, |el| {
+            .when(matches!(self.page, Page::Board | Page::Agenda), |el| {
                 el.child(
                     titlebar_button(
                         "carry",
@@ -2113,11 +2124,11 @@ impl Workspace {
         let heading = active_tag.map_or_else(
             || match self.page {
                 Page::Board => self.t("总览", "Overview"),
-                Page::Agenda => self.t("周议程", "Week agenda"),
-                Page::Calendar => self.t("日历", "Calendar"),
+                Page::Agenda => self.t("周历", "Weekly"),
+                Page::Calendar => self.t("月历", "Monthly"),
                 Page::All => self.t("所有任务", "All tasks"),
                 Page::Notes => self.t("笔记", "Notes"),
-                Page::Settings => self.t("设置与外观", "Settings & appearance"),
+                Page::Settings => self.t("设置", "Settings"),
             },
             |tag| tag.name.as_str(),
         );
@@ -2266,7 +2277,10 @@ impl Workspace {
                             .window_control_area(WindowControlArea::Drag),
                     )
                     .when(
-                        matches!(self.page, Page::Board | Page::Agenda | Page::All),
+                        matches!(
+                            self.page,
+                            Page::Board | Page::Agenda | Page::Calendar | Page::All
+                        ),
                         |el| el.child(self.task_actions(p, cx)),
                     )
                     .when(
@@ -2275,27 +2289,25 @@ impl Workspace {
                             Page::Board | Page::Agenda | Page::Calendar | Page::All
                         ),
                         |el| {
-                            el.when(self.page != Page::Calendar, |el| {
-                                el.child(div().w(px(1.)).h(px(14.)).flex_shrink_0().bg(p.border))
-                            })
-                            .child(
-                                titlebar_button(
-                                    "new-task",
-                                    IconName::Plus,
-                                    13.,
-                                    self.t("新建任务 · ⌘N", "New task · ⌘N"),
-                                    Palette {
-                                        text: p.accent_text,
-                                        muted: p.accent_text,
-                                        hover: p.accent.opacity(0.85),
-                                        ..p
-                                    },
+                            el.child(div().w(px(1.)).h(px(14.)).flex_shrink_0().bg(p.border))
+                                .child(
+                                    titlebar_button(
+                                        "new-task",
+                                        IconName::Plus,
+                                        13.,
+                                        self.t("新建任务 · ⌘N", "New task · ⌘N"),
+                                        Palette {
+                                            text: p.accent_text,
+                                            muted: p.accent_text,
+                                            hover: p.accent.opacity(0.85),
+                                            ..p
+                                        },
+                                    )
+                                    .bg(p.accent)
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.add_task(0, None, window, cx),
+                                    )),
                                 )
-                                .bg(p.accent)
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| this.add_task(0, None, window, cx),
-                                )),
-                            )
                         },
                     )
                     .when(!sidebar_collapsed, |el| {
@@ -2875,10 +2887,18 @@ impl Workspace {
                     .p_4()
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(p.border)
+                    .border_color(if date == model::today() {
+                        p.accent
+                    } else {
+                        p.border
+                    })
                     .bg(p.subtle)
+                    .when(date < model::today(), |el| el.opacity(0.5))
                     .drag_over::<DragTask>(move |style, _, _, _| {
-                        style.bg(p.accent.opacity(0.10)).border_color(p.accent)
+                        style
+                            .opacity(1.)
+                            .bg(p.accent.opacity(0.10))
+                            .border_color(p.accent)
                     })
                     .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
                         cx.stop_propagation();
