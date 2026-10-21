@@ -1149,7 +1149,7 @@ impl Workspace {
             (SettingsTab::Tags, "标签", "Tags"),
             (SettingsTab::Parsing, "解析", "Parsing"),
             (SettingsTab::Data, "数据", "Data"),
-            (SettingsTab::Updates, "版本与更新", "Version & updates"),
+            (SettingsTab::Updates, "版本", "Version"),
         ] {
             let selected = active_tab == tab;
             tabs = tabs.child(
@@ -2075,7 +2075,7 @@ impl Workspace {
             _ => String::new(),
         };
         section(
-            self.t("版本与更新", "Version & updates"),
+            self.t("版本", "Version"),
             self.t("获取最新版本，查看此应用的版本信息。", "Get the latest release and view app version information."),
             p,
         )

@@ -486,6 +486,15 @@ fn task_connector(connector: TaskConnector, color: Hsla) -> impl IntoElement {
     .inset_0()
 }
 
+fn is_unplanned_in_week(task: &Task, week: NaiveDate) -> bool {
+    task.due_date.is_none() && model::week_start(task.week_start) == model::week_start(week)
+}
+
+fn matches_tag_week(task: &Task, tag: &str, week: NaiveDate) -> bool {
+    task.tags.iter().any(|id| id == tag)
+        && model::week_start(task.week_start) == model::week_start(week)
+}
+
 fn week_completion(doc: &Document, week: NaiveDate) -> [(usize, usize); 4] {
     let mut counts = [(0, 0); 4];
     let week = model::week_start(week);
@@ -1250,7 +1259,7 @@ impl Workspace {
             return false;
         }
         if let Some(tag) = &self.tag_filter
-            && !task.tags.contains(tag)
+            && !matches_tag_week(task, tag, self.week)
         {
             return false;
         }
@@ -1590,7 +1599,7 @@ impl Workspace {
                                             div()
                                                 .flex()
                                                 .min_w_0()
-                                                .items_start()
+                                                .items_center()
                                                 .gap(px(5.))
                                                 .text_xs()
                                                 .text_color(p.muted)
@@ -1859,7 +1868,7 @@ impl Workspace {
                 .doc
                 .tasks
                 .iter()
-                .filter(|task| task.parent_id.is_none() && task.tags.contains(&id))
+                .filter(|task| task.parent_id.is_none() && matches_tag_week(task, &id, self.week))
                 .count();
             let active = self.tag_filter.as_ref() == Some(&id);
             let label = format!("{} · {count}", tag.name);
@@ -2096,13 +2105,26 @@ impl Workspace {
             });
         let compact = available_width < px(700.);
         let small_toolbar = available_width < px(280.);
-        let heading = match self.page {
-            Page::Board => self.t("总览", "Overview"),
-            Page::Agenda => self.t("周议程", "Week agenda"),
-            Page::Calendar => self.t("日历", "Calendar"),
-            Page::All => self.t("所有任务", "All tasks"),
-            Page::Notes => self.t("笔记", "Notes"),
-            Page::Settings => self.t("设置与外观", "Settings & appearance"),
+        let active_tag = self
+            .tag_filter
+            .as_ref()
+            .filter(|_| self.page == Page::All)
+            .and_then(|id| self.doc.tags.iter().find(|tag| &tag.id == id));
+        let heading = active_tag.map_or_else(
+            || match self.page {
+                Page::Board => self.t("总览", "Overview"),
+                Page::Agenda => self.t("周议程", "Week agenda"),
+                Page::Calendar => self.t("日历", "Calendar"),
+                Page::All => self.t("所有任务", "All tasks"),
+                Page::Notes => self.t("笔记", "Notes"),
+                Page::Settings => self.t("设置与外观", "Settings & appearance"),
+            },
+            |tag| tag.name.as_str(),
+        );
+        let section = if active_tag.is_some() {
+            self.t("标签", "Tags")
+        } else {
+            self.t("工作空间", "Workspace")
         };
         let current_week = model::week_start(model::today());
         let (week_title, week_start_label, week_end_label) =
@@ -2218,15 +2240,18 @@ impl Workspace {
                             .gap_3()
                             .when(small_toolbar, |el| el.hidden())
                             .window_control_area(WindowControlArea::Drag)
-                            .when(!compact, |el| {
-                                el.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(p.muted)
-                                        .child(self.t("工作空间", "Workspace").to_string()),
-                                )
-                                .child(div().text_color(p.border).child("/"))
-                            })
+                            .when(
+                                !sidebar_collapsed && (!compact || active_tag.is_some()),
+                                |el| {
+                                    el.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(p.muted)
+                                            .child(section.to_string()),
+                                    )
+                                    .child(div().text_color(p.border).child("/"))
+                                },
+                            )
                             .child(
                                 div()
                                     .text_sm()
@@ -2764,6 +2789,65 @@ impl Workspace {
                     .children(overdue.iter().map(|t| self.flat_row(t, window, cx))),
             );
         }
+        let mut unplanned = self
+            .doc
+            .tasks
+            .iter()
+            .filter(|task| is_unplanned_in_week(task, self.week) && self.visible(task, cx))
+            .cloned()
+            .collect::<Vec<_>>();
+        unplanned.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+        if !unplanned.is_empty() {
+            let completed = unplanned.iter().filter(|task| task.completed).count();
+            body = body.child(
+                div()
+                    .id("agenda-unplanned")
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .p_4()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.subtle)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .text_color(p.muted)
+                            .child(format!(
+                                "{} · {}",
+                                self.t("未规划", "Unplanned"),
+                                unplanned.len()
+                            )),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(
+                                unplanned
+                                    .iter()
+                                    .filter(|task| !task.completed)
+                                    .map(|task| self.flat_row(task, window, cx)),
+                            )
+                            .when(completed > 0, |el| {
+                                el.child(self.completed_heading(completed, p))
+                            })
+                            .children(
+                                unplanned
+                                    .iter()
+                                    .filter(|task| task.completed)
+                                    .map(|task| self.flat_row(task, window, cx)),
+                            ),
+                    ),
+            );
+        }
         for offset in 0..7 {
             let date = self.week + Duration::days(offset);
             let mut tasks = self
@@ -2772,6 +2856,7 @@ impl Workspace {
                 .iter()
                 .filter(|t| {
                     t.agenda_date() == Some(date)
+                        && !is_unplanned_in_week(t, self.week)
                         && self.visible(t, cx)
                         && (t.completed || date >= model::today())
                 })
@@ -2815,30 +2900,7 @@ impl Workspace {
                                 p.muted
                             })
                             .child(date.format("%m.%d").to_string())
-                            .child(self.weekday(date))
-                            .child(div().flex_1())
-                            .child(
-                                icon_button(
-                                    ("day-add", offset as usize),
-                                    IconName::Plus,
-                                    self.t("添加当天任务", "Add task for this day"),
-                                    p,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        let week = model::week_start(date);
-                                        let mut id = String::new();
-                                        this.change(cx, |doc| {
-                                            id = doc.add_task("新任务 / New task", week, 0);
-                                            doc.schedule(&id, date);
-                                            Ok(())
-                                        });
-                                        if this.error.is_none() {
-                                            this.open_task(&id, window, cx);
-                                        }
-                                    },
-                                )),
-                            ),
+                            .child(self.weekday(date)),
                     )
                     .child(
                         div()
@@ -3486,9 +3548,100 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{week_completion, week_labels};
+    use super::{is_unplanned_in_week, matches_tag_week, week_completion, week_labels};
     use crate::model::{Document, Task};
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, TimeZone, Utc};
+
+    #[test]
+    fn unplanned_tasks_use_week_membership_and_due_date_even_when_completed() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let timestamp = Utc.with_ymd_and_hms(2026, 10, 20, 9, 0, 0).unwrap();
+        let mut task = Task {
+            week_start: week,
+            ..Default::default()
+        };
+        assert!(is_unplanned_in_week(&task, week));
+        assert!(!is_unplanned_in_week(
+            &task,
+            week - chrono::Duration::weeks(1)
+        ));
+        assert!(!is_unplanned_in_week(
+            &task,
+            week + chrono::Duration::weeks(1)
+        ));
+
+        task.parent_id = Some("parent".into());
+        task.week_start = week + chrono::Duration::days(4);
+        task.completed = true;
+        task.completed_at = Some(timestamp);
+        assert!(is_unplanned_in_week(&task, week));
+        assert!(task.agenda_date().is_some());
+
+        task.due_date = Some(timestamp);
+        assert!(!is_unplanned_in_week(&task, week));
+    }
+
+    #[test]
+    fn tag_tasks_follow_the_selected_week_across_year_boundaries() {
+        let week = NaiveDate::from_ymd_opt(2025, 12, 29).unwrap();
+        let mut doc = Document::default();
+        for (title, date, tags, completed, parent_id) in [
+            (
+                "previous",
+                week - chrono::Duration::weeks(1),
+                vec!["work"],
+                false,
+                None,
+            ),
+            ("current", week, vec!["work"], false, None),
+            ("other-tag", week, vec!["personal"], false, None),
+            ("child", week, vec!["work"], false, Some("parent")),
+            ("done", week, vec!["work"], true, None),
+            (
+                "imported-midweek",
+                week + chrono::Duration::days(4),
+                vec!["work"],
+                false,
+                None,
+            ),
+            (
+                "next",
+                week + chrono::Duration::weeks(1),
+                vec!["work"],
+                false,
+                None,
+            ),
+        ] {
+            doc.tasks.push(Task {
+                title: title.into(),
+                week_start: date,
+                tags: tags.into_iter().map(str::to_owned).collect(),
+                completed,
+                parent_id: parent_id.map(str::to_owned),
+                ..Default::default()
+            });
+        }
+        for (selected_week, expected) in [
+            (week - chrono::Duration::weeks(1), vec!["previous"]),
+            (week, vec!["current", "child", "done", "imported-midweek"]),
+            (week + chrono::Duration::weeks(1), vec!["next"]),
+        ] {
+            let actual = doc
+                .tasks
+                .iter()
+                .filter(|task| matches_tag_week(task, "work", selected_week))
+                .map(|task| task.title.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(
+            doc.tasks
+                .iter()
+                .filter(|task| task.parent_id.is_none() && matches_tag_week(task, "work", week))
+                .count(),
+            3
+        );
+    }
 
     #[test]
     fn completion_counts_week_roots_independently_of_visibility_and_children() {
