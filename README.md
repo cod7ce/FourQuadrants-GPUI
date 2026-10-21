@@ -2,6 +2,10 @@
 
 原 FourQuadrants 的 macOS 原生重构。Rust + GPUI 负责主界面和业务，Swift/AppKit 负责 RTFD 富文本、图片、SwiftData 迁移、Foundation 剪贴板解析与本地通知。仅面向 macOS 14+；当前在 Apple Silicon / macOS 27 上构建与验证。
 
+## 安装
+
+从 [GitHub Releases](https://github.com/cod7ce/FourQuadrants-GPUI/releases/latest) 下载 `FourQuadrants-GPUI-0.19.0-arm64.zip`，解压后将应用移入“应用程序”。当前发布包支持 Apple Silicon、macOS 14 及以上。包使用 ad-hoc 代码签名，尚未经过 Apple 公证；macOS 可能阻止首次打开，可在核对来源后通过“系统设置 → 隐私与安全性”允许打开。
+
 ## 启动
 
 需要 Rust 1.89+、Xcode 与命令行工具。依赖锁定在 `Cargo.lock`，GPUI 0.2.2 + gpui-component 0.5.1。启用 `runtime_shaders`，不需要另下载 Metal Toolchain。
@@ -18,7 +22,7 @@ bash scripts/bundle.sh
 open "dist/FourQuadrants GPUI.app"
 ```
 
-优化构建用 `bash scripts/bundle.sh release`。包采用本地 ad-hoc 签名，尚未做 Developer ID 签名、公证或发布。构建脚本保留原生通知 helper 的独立 bundle，并从官方地址下载和校验固定版本的 Sparkle 框架。
+优化构建用 `bash scripts/bundle.sh release`。包采用 ad-hoc 签名，尚未做 Developer ID 签名或公证。构建脚本保留原生通知 helper 的独立 bundle，并从官方地址下载和校验固定版本的 Sparkle 框架。
 
 使用演示数据（不会调度或清理真实提醒）：
 
@@ -136,7 +140,7 @@ Rust 测试覆盖模型、树操作、结转、合并幂等、笔记冲突、原
 
 安装前以及系统最终退出时，均使用现有退出检查保存任务与笔记，写入或校验失败时保留草稿并暂停更新；富文本窗口必须先保存并关闭。更新包使用 Ed25519 签名，打包脚本会核对应用内公钥；缺少公钥时拒绝生成发布包。签名私钥只保存在本机钥匙串或发布环境的秘密变量中，不进入仓库。构建与本地签名步骤见 [发布说明](docs/RELEASING.md)。
 
-Sparkle 更新签名与 Apple Developer ID 签名是独立的。当前本地应用采用 ad-hoc 签名，尚未取得 Developer ID 分发签名或完成公证。在线更新仍需上传签名安装包和 appcast 后才能端到端验收。
+Sparkle 更新签名与 Apple Developer ID 签名是独立的。当前应用采用 ad-hoc 签名，尚未取得 Developer ID 分发签名或完成公证。独立更新源使用本仓库 GitHub Releases 中的 `appcast.xml`，与旧 SwiftUI 应用互不替换。首次发布后，完整的跨版本安装与重启仍需在后续版本验收。
 
 ## 代码结构
 
