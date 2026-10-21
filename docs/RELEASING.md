@@ -1,6 +1,6 @@
 # Local macOS release packaging
 
-These commands build files locally. They do not create a repository, commit, push, upload, publish, configure secrets, or create a GitHub workflow. Release archives are Apple Silicon (`arm64`) only. Run commands from this repository on an Apple Silicon Mac with Xcode command-line tools, Rust, Python 3, and `curl` available.
+Local commands build and verify files under `dist/` without uploading them. The GitHub Actions workflow publishes version tags after validation. Release archives are Apple Silicon (`arm64`) only. Run local commands from this repository on an Apple Silicon Mac with Xcode command-line tools, Rust, Python 3, and `curl` available.
 
 `Cargo.toml` is the version source of truth. Both `CFBundleShortVersionString` and `CFBundleVersion` in `native/AppInfo.plist` must equal its `0.x.x` version, currently `0.19.0`. Packaging rejects mismatches.
 
@@ -29,9 +29,9 @@ The repository's `scripts/update-key.swift` uses Apple's CryptoKit and Security 
 xcrun swift scripts/update-key.swift public
 ```
 
-Creating the Keychain record is an explicit local setup action and may require approval. That setup has not been completed by the packaging implementation. Keep the private key in Keychain; do not add it to the repository. Place only the printed **public** key in `native/AppInfo.plist` as the string `SUPublicEDKey`, then rebuild the bundle. Do not replace an established key merely to resolve a packaging error: previously installed versions trust the public key they already contain.
+Creating the Keychain record is an explicit local setup action and may require approval. Keep the private key in Keychain; do not add it to the repository. Place only the printed **public** key in `native/AppInfo.plist` as the string `SUPublicEDKey`, then rebuild the bundle. Do not replace an established key merely to resolve a packaging error: previously installed versions trust the public key they already contain. For GitHub Actions, add the base64 Ed25519 seed as the repository Actions secret `SPARKLE_PRIVATE_KEY`; the workflow exposes it only to the setup check and signing step, and passes it to the signing helper over standard input. The initial 0.19.0 release was signed locally; the Actions secret must be configured before a later new version can build in CI. Never print it or store it in a file.
 
-`SUFeedURL` in the same plist is the HTTPS URL where the app will look for an appcast. Configure the intended URL before distributing an update-enabled build. Its location may differ from the archive directory passed below; for example, a stable appcast URL can describe an archive in a versioned directory. These scripts do not create or upload to either location.
+`SUFeedURL` in the same plist is the HTTPS URL where the app will look for an appcast. Configure the intended URL before distributing an update-enabled build. Its location may differ from the archive directory passed below; for example, the stable URL `https://github.com/cod7ce/FourQuadrants-GPUI/releases/latest/download/appcast.xml` can describe a versioned archive under a tag release. The workflow publishes `appcast.xml`, the ZIP, and `SHA256SUMS` as GitHub Release assets. Local scripts do not upload to either location.
 
 A local bundle can be built without `SUPublicEDKey`; release packaging refuses to sign an update until a valid key is configured. The package script verifies its archive signature against the public key in the actual bundled plist and fails on a mismatch.
 
@@ -71,11 +71,11 @@ The script creates these files under `dist/releases/0.19.0/`:
 
 The appcast enclosure is signed; the XML feed itself is not separately signed. The package script invokes the repository's CryptoKit helper to sign and independently verify the exact archive bytes against the bundled `SUPublicEDKey`. It does not run downloaded Sparkle executables. Existing version output is never overwritten: move an earlier output directory aside before rebuilding that version.
 
-For future automation, an optional `SPARKLE_PRIVATE_KEY` environment variable can supply a base64-encoded 32-byte Ed25519 private seed. The script disables tracing, removes the variable from build subprocesses, passes its value to the signing helper over standard input, and clears its temporary copy after signing. Provision that value outside source control; do not place it in shell examples, repository files, or logs. The corresponding public key must already be in the app's plist. This option does not configure a CI service or write secrets anywhere.
+An optional `SPARKLE_PRIVATE_KEY` environment variable supplies a base64-encoded 32-byte Ed25519 private seed to the local packaging script. It disables tracing, removes the variable from build subprocesses, passes its value to the signing helper over standard input, and clears its temporary copy after signing. Provision that value outside source control; do not place it in shell examples, repository files, or logs. The corresponding public key must already be in the app's plist.
 
 ## Sparkle's optional signing tools
 
-The pinned SDK also includes upstream signing tools, but using them requires permission to execute downloaded code. They are not needed by the local packaging commands above. Sparkle 2.10.0 advertises these options:
+The pinned SDK also includes upstream signing tools; local and CI packaging use the repository's CryptoKit helper instead. Sparkle 2.10.0 advertises these options:
 
 - `generate_keys --account com.fourquadrants.gpui.sparkle -p` looks up an existing public key; omitting `-p` creates or reuses a key in Sparkle's own Keychain format.
 - `sign_update --account com.fourquadrants.gpui.sparkle -p ARCHIVE` signs using that Sparkle-managed key.
@@ -83,6 +83,16 @@ The pinned SDK also includes upstream signing tools, but using them requires per
 - `sign_update --verify ARCHIVE SIGNATURE` verifies using its selected signing key; it has no option to take the app's public key directly.
 
 The repository's CryptoKit helper uses its own Keychain record, so the upstream tool's account option does not automatically access it. Do not create a second signing identity as a substitute for the configured app key. Never execute tools from an unverified SDK download.
+
+## Publish later versions
+
+Update `Cargo.toml`, the root package version in `Cargo.lock`, and both app version fields in `native/AppInfo.plist` together. Keep the existing public key and feed. Commit and push the changes, then create and push a matching `v0.x.x` tag. `.github/workflows/release.yml` validates the tag, runs Rust and native tests on an arm64 macOS runner, builds and signs the package, then publishes the three release assets. A missing signing secret fails before the build. Actions are pinned to commit hashes and only the publish job has repository write access.
+
+The workflow can also be dispatched with an existing tag. If that version is already published, it downloads the three assets, checks their hash, metadata and Ed25519 signature, then skips building and uploading. It never overwrites an existing release. A checksum check alone does not replace signature verification.
+
+```sh
+gh workflow run release.yml --repo cod7ce/FourQuadrants-GPUI --ref main -f tag=v0.19.0
+```
 
 ## Local checks
 
