@@ -1,0 +1,32 @@
+[package]
+name = "four-quadrants"
+version = "0.19.0"
+edition = "2024"
+description = "A native macOS Eisenhower matrix, built with GPUI"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders"] }
+gpui-component = "=0.5.1"
+gpui-component-assets = "=0.5.1"
+markdown = "=1.0.0"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "=0.6.2"
+
+[build-dependencies]
+cc = "=1.8.0"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = true
+lto = "thin"

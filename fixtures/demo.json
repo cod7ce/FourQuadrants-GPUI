@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {"id":"demo-1","title":"完成本周产品方案","urgent":true,"important":true,"weekStart":"2026-10-12","tags":["work"],"issueKey":"PLAN-128","sortOrder":0,"notes":"这是一份演示数据，可安全修改。","dueDate":"2026-10-18T10:00:00Z","progressNotes":[{"id":"note-1","text":"已完成需求梳理，下一步确认交互细节。","createdAt":"2026-10-18T08:00:00Z"}]},
+    {"id":"demo-2","title":"回复设计评审反馈","urgent":true,"important":true,"weekStart":"2026-10-12","tags":["work"],"sortOrder":1},
+    {"id":"demo-3","title":"每周阅读与思考","urgent":false,"important":true,"weekStart":"2026-10-12","tags":["life"],"sortOrder":0},
+    {"id":"demo-4","title":"整理长期学习计划","urgent":false,"important":true,"weekStart":"2026-10-12","tags":["life"],"sortOrder":1},
+    {"id":"demo-5","title":"确认周末的行程安排","urgent":true,"important":false,"weekStart":"2026-10-12","tags":["life"],"sortOrder":0},
+    {"id":"demo-6","title":"清理收藏夹","urgent":false,"important":false,"weekStart":"2026-10-12","sortOrder":0},
+    {"id":"demo-7","title":"明确核心用户场景","parentId":"demo-1","urgent":true,"important":true,"weekStart":"2026-10-12","completed":true,"completedAt":"2026-10-17T10:00:00Z","sortOrder":0},
+    {"id":"demo-8","title":"准备交互原型","parentId":"demo-1","urgent":true,"important":true,"weekStart":"2026-10-12","sortOrder":1},
+    {"id":"demo-history","title":"上周遗留事项","urgent":false,"important":true,"weekStart":"2026-10-05","sortOrder":0}
+  ],
+  "tags":[{"id":"work","name":"工作","colorHex":"#B5A1FA","sortOrder":0},{"id":"life","name":"生活","colorHex":"#91CBB4","sortOrder":1}],
+  "weekNotes":[{"weekStart":"2026-10-12","text":"本周，留一点空间给真正重要的事情。\n\n• 做得好的事情\n• 值得改进的地方\n• 下周想尝试的改变"}],
+  "settings":{"theme":"dark","glass":true,"opacity":0.86,"language":"zh"}
+}
