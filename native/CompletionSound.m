@@ -7,6 +7,7 @@ static AVAudioEngine *FQCompletionEngine;
 static AVAudioPlayerNode *FQCompletionPlayer;
 static AVAudioPCMBuffer *FQCompletionBuffer;
 static id FQCompletionConfigurationObserver;
+static BOOL FQCompletionSoundEnabled;
 
 static OSStatus FQReadSoundBytes(void *context, SInt64 position, UInt32 count, void *destination, UInt32 *actual) {
     NSData *data = (__bridge NSData *)context;
@@ -52,7 +53,7 @@ static AVAudioPCMBuffer *FQDecodeCompletionSound(NSData *data) {
 }
 
 static BOOL FQStartCompletionEngine(void) {
-    if (!FQCompletionEngine) return NO;
+    if (!FQCompletionSoundEnabled || !FQCompletionEngine) return NO;
     if (!FQCompletionEngine.isRunning) {
         NSError *error = nil;
         if (![FQCompletionEngine startAndReturnError:&error]) {
@@ -122,10 +123,24 @@ void fq_prepare_task_complete_sound(const unsigned char *bytes, size_t length) {
                         dispatch_async(FQCompletionSoundQueue, ^{ FQStartCompletionEngine(); });
                     }];
                 [FQCompletionEngine prepare];
-                // Keep the output path running silently between clicks, with no looping sound.
-                FQStartCompletionEngine();
+                // Enabling the preference starts the prepared output path.
             }
         });
+    });
+}
+
+void fq_set_task_complete_sound_enabled(int enabled) {
+    if (![NSThread isMainThread] || !FQCompletionSoundQueue) return;
+    dispatch_async(FQCompletionSoundQueue, ^{
+        @autoreleasepool {
+            FQCompletionSoundEnabled = enabled != 0;
+            if (FQCompletionSoundEnabled) {
+                FQStartCompletionEngine();
+            } else {
+                [FQCompletionPlayer stop];
+                [FQCompletionEngine stop];
+            }
+        }
     });
 }
 

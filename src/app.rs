@@ -680,7 +680,9 @@ impl Workspace {
                         || next.tasks.iter().any(|new| {
                             new.remind_at.is_some() && self.doc.task(&new.id) != Some(new)
                         });
+                let previous_settings = self.doc.settings.clone();
                 self.doc = next;
+                self.sync_completion_preferences(&previous_settings);
                 self.task_focus.retain_existing(&self.doc);
                 self.error = None;
                 self.status = self.t("已保存", "Saved").into();
@@ -925,7 +927,9 @@ impl Workspace {
                     self.undo.pop();
                     self.redo.push(self.doc.clone());
                 }
+                let previous_settings = self.doc.settings.clone();
                 self.doc = target;
+                self.sync_completion_preferences(&previous_settings);
                 self.task_focus.retain_existing(&self.doc);
                 self.reconcile_reminders(cx);
                 self.dismiss_task_dialog(window, cx);

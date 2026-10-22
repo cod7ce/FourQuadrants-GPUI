@@ -1,7 +1,8 @@
 use super::*;
 use std::time::Duration;
 
-const DURATION: Duration = Duration::from_millis(700);
+const DURATION: Duration = Duration::from_millis(1000);
+const SPREAD: f32 = 1.5;
 const PARTICLE_COUNT: usize = 20;
 
 #[derive(Default)]
@@ -99,9 +100,10 @@ fn particle_frame(index: usize, progress: f32) -> Option<ParticleFrame> {
         + (index * 7 % PARTICLE_COUNT) as f32 / (PARTICLE_COUNT - 1) as f32
             * (std::f32::consts::PI - 0.4);
     let speed = 100. + (index * 13 % 60) as f32;
-    let time = progress * DURATION.as_secs_f32();
-    let x = direction.cos() * speed * time;
-    let y = direction.sin() * speed * time + 150. * time * time;
+    // Keep the arc's shape independent of its playback duration.
+    let time = progress * 0.7;
+    let x = direction.cos() * speed * time * SPREAD;
+    let y = (direction.sin() * speed * time + 150. * time * time) * SPREAD;
     let spin = seed * 1.7 + time * if index.is_multiple_of(2) { 9. } else { -7. };
     let (sin, cos) = spin.sin_cos();
     let half_width =
@@ -121,7 +123,20 @@ fn particle_frame(index: usize, progress: f32) -> Option<ParticleFrame> {
 }
 
 impl Workspace {
+    pub(super) fn sync_completion_preferences(&mut self, previous: &model::Settings) {
+        if previous.task_completion_sound != self.doc.settings.task_completion_sound {
+            crate::native::set_task_complete_sound_enabled(self.doc.settings.task_completion_sound);
+        }
+        if !self.doc.settings.task_confetti {
+            self.confetti.burst = None;
+            self.confetti_cleanup = None;
+        }
+    }
+
     fn completion_animation_enabled(&self) -> bool {
+        if !self.doc.settings.task_confetti {
+            return false;
+        }
         // Let isolated debug previews demonstrate motion without changing macOS settings.
         #[cfg(debug_assertions)]
         if std::env::var("FOUR_QUADRANTS_PREVIEW_CONFETTI").as_deref() == Ok("1")
@@ -156,7 +171,9 @@ impl Workspace {
         if was_completed || !self.doc.task(id).is_some_and(|task| task.completed) {
             return;
         }
-        crate::native::play_task_complete_sound();
+        if self.doc.settings.task_completion_sound {
+            crate::native::play_task_complete_sound();
+        }
         if !self.completion_animation_enabled() {
             return;
         }
@@ -188,8 +205,8 @@ mod tests {
                 let frame = particle_frame(index, step as f32 / 100.).unwrap();
                 assert!((0.0..=1.0).contains(&frame.opacity));
                 for corner in frame.corners {
-                    assert!(f32::from(corner.x).abs() < 120.);
-                    assert!(f32::from(corner.y).abs() < 120.);
+                    assert!(f32::from(corner.x).abs() < 190.);
+                    assert!(f32::from(corner.y).abs() < 190.);
                 }
             }
             assert_eq!(particle_frame(index, 0.).unwrap().opacity, 0.);

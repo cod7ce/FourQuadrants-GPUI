@@ -18,6 +18,7 @@ unsafe extern "C" {
     fn fq_set_application_icon(bytes: *const u8, length: usize) -> i32;
     fn fq_reduce_motion() -> i32;
     fn fq_prepare_task_complete_sound(bytes: *const u8, length: usize);
+    fn fq_set_task_complete_sound_enabled(enabled: i32);
     fn fq_play_task_complete_sound();
     fn fq_configure_window_material(
         view: *mut std::ffi::c_void,
@@ -57,13 +58,18 @@ pub struct UpdateStatus {
     pub can_check: bool,
 }
 
-pub fn prepare_task_complete_sound() {
+pub fn set_task_complete_sound_enabled(enabled: bool) {
     #[cfg(target_os = "macos")]
-    // Copy the embedded PCM at startup; decoding and output preparation run off the UI thread.
+    // Prepare once when enabled; all engine changes run off the UI thread in queue order.
     unsafe {
-        let sound = include_bytes!("../assets/audio/task-complete.aiff");
-        fq_prepare_task_complete_sound(sound.as_ptr(), sound.len());
+        if enabled {
+            let sound = include_bytes!("../assets/audio/task-complete.aiff");
+            fq_prepare_task_complete_sound(sound.as_ptr(), sound.len());
+        }
+        fq_set_task_complete_sound_enabled(i32::from(enabled));
     };
+    #[cfg(not(target_os = "macos"))]
+    let _ = enabled;
 }
 
 pub fn play_task_complete_sound() {

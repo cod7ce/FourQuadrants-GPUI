@@ -213,7 +213,7 @@ fn cli() -> anyhow::Result<()> {
         store::Store::open_default()?
     };
     Application::new().with_assets(Assets).run(move |cx| {
-        native::prepare_task_complete_sound();
+        native::set_task_complete_sound_enabled(doc.settings.task_completion_sound);
         if let Err(error) = native::set_application_icon() {
             eprintln!("{error:#}");
         }

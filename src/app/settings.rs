@@ -207,6 +207,7 @@ enum SettingsTab {
     Tags,
     Parsing,
     Data,
+    Experiments,
     Updates,
 }
 
@@ -218,6 +219,7 @@ impl SettingsTab {
             Self::Tags => "tags",
             Self::Parsing => "parsing",
             Self::Data => "data",
+            Self::Experiments => "experiments",
             Self::Updates => "updates",
         }
     }
@@ -1146,6 +1148,7 @@ impl Workspace {
             (SettingsTab::Tags, "标签", "Tags"),
             (SettingsTab::Parsing, "解析", "Parsing"),
             (SettingsTab::Data, "数据", "Data"),
+            (SettingsTab::Experiments, "实验", "Experiments"),
             (SettingsTab::Updates, "版本", "Version"),
         ] {
             let selected = active_tab == tab;
@@ -1175,6 +1178,7 @@ impl Workspace {
             SettingsTab::Tags => self.settings_tags(p, cx),
             SettingsTab::Parsing => self.settings_rules(&s, p, cx),
             SettingsTab::Data => self.settings_storage(p, cx),
+            SettingsTab::Experiments => self.settings_experiments(&s, p, cx),
             SettingsTab::Updates => self.settings_updates(p, cx),
         };
         div()
@@ -2122,6 +2126,53 @@ impl Workspace {
                 .child(Input::new(&self.settings_editor.preview).small().h(px(85.)))
                 .child(div().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(preview)))
             .into_any_element()
+    }
+
+    fn settings_experiments(&self, s: &Settings, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        section(
+            self.t("实验", "Experiments"),
+            self.t("试用实验功能，按喜好开启或关闭。", "Try experimental features and choose which to enable."),
+            p,
+        )
+        .child(
+            div().flex().flex_col().gap_2()
+                .child(
+                    Switch::new("settings-task-confetti")
+                        .small()
+                        .checked(s.task_confetti)
+                        .label(self.t("撒花特效", "Confetti effect").to_owned())
+                        .on_click(cx.listener(|this, value: &bool, _, cx| {
+                            this.change(cx, |doc| {
+                                doc.settings.task_confetti = *value;
+                                Ok(())
+                            });
+                        })),
+                )
+                .child(div().text_size(px(12.)).text_color(p.muted).child(self.t(
+                    "完成任务时播放撒花动画，遵循系统的“减少动态效果”设置。",
+                    "Celebrate completed tasks with confetti. Respects Reduce Motion in system settings.",
+                ).to_owned())),
+        )
+        .child(
+            div().flex().flex_col().gap_2().pt_4().border_t_1().border_color(p.border)
+                .child(
+                    Switch::new("settings-task-completion-sound")
+                        .small()
+                        .checked(s.task_completion_sound)
+                        .label(self.t("完成音效", "Completion sound").to_owned())
+                        .on_click(cx.listener(|this, value: &bool, _, cx| {
+                            this.change(cx, |doc| {
+                                doc.settings.task_completion_sound = *value;
+                                Ok(())
+                            });
+                        })),
+                )
+                .child(div().text_size(px(12.)).text_color(p.muted).child(self.t(
+                    "完成任务时播放简短的双音提示。",
+                    "Play a short two-note sound when a task is completed.",
+                ).to_owned())),
+        )
+        .into_any_element()
     }
 
     fn settings_updates(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {

@@ -337,6 +337,8 @@ pub struct Settings {
     pub font_family: String,
     pub show_inbox: bool,
     pub hide_completed: bool,
+    pub task_confetti: bool,
+    pub task_completion_sound: bool,
     /// The sidebar uses a compact icon rail to leave more room for content.
     pub sidebar_collapsed: bool,
     pub glass: bool,
@@ -366,6 +368,8 @@ impl Default for Settings {
             font_family: String::new(),
             show_inbox: true,
             hide_completed: false,
+            task_confetti: true,
+            task_completion_sound: true,
             sidebar_collapsed: false,
             glass: true,
             opacity: 0.50,
@@ -1814,6 +1818,40 @@ mod tests {
 
         let roundtrip: Document = serde_json::from_value(value).unwrap();
         assert_eq!(roundtrip, parsed);
+    }
+
+    #[test]
+    fn completion_preferences_preserve_defaults_and_explicit_disabled_values() {
+        for value in [json!({}), json!({"settings": {}})] {
+            let doc: Document = serde_json::from_value(value).unwrap();
+            assert!(doc.settings.task_confetti);
+            assert!(doc.settings.task_completion_sound);
+        }
+        for (value, confetti, sound) in [
+            (json!({"taskConfetti": false}), false, true),
+            (json!({"taskCompletionSound": false}), true, false),
+            (
+                json!({"taskConfetti": false, "taskCompletionSound": false}),
+                false,
+                false,
+            ),
+            (
+                json!({"taskConfetti": true, "taskCompletionSound": true}),
+                true,
+                true,
+            ),
+        ] {
+            let settings: Settings = serde_json::from_value(value).unwrap();
+            assert_eq!(settings.task_confetti, confetti);
+            assert_eq!(settings.task_completion_sound, sound);
+            let serialized = serde_json::to_value(&settings).unwrap();
+            assert_eq!(serialized["taskConfetti"], confetti);
+            assert_eq!(serialized["taskCompletionSound"], sound);
+            assert_eq!(
+                serde_json::from_value::<Settings>(serialized).unwrap(),
+                settings
+            );
+        }
     }
 
     fn note_attachment(bytes: &[u8]) -> NoteAttachment {
