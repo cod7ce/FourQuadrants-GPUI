@@ -1,5 +1,6 @@
 mod accent_picker;
 mod calendar;
+mod confetti;
 mod editor;
 mod notes;
 mod notes_preview;
@@ -192,6 +193,8 @@ pub struct Workspace {
     collapsed: HashSet<String>,
     sidebar_overlay: bool,
     dragging_task: Option<String>,
+    confetti: confetti::Confetti,
+    confetti_cleanup: Option<gpui::Task<()>>,
     background_key: String,
     background_render: Option<PathBuf>,
     clipboard_text: Option<String>,
@@ -622,6 +625,8 @@ impl Workspace {
             collapsed: HashSet::new(),
             sidebar_overlay: false,
             dragging_task: None,
+            confetti: confetti::Confetti::default(),
+            confetti_cleanup: None,
             background_key: String::new(),
             background_render: None,
             clipboard_text: None,
@@ -1573,12 +1578,9 @@ impl Workspace {
                                     p,
                                 )
                                 .on_click(cx.listener(
-                                    move |this, _, _, cx| {
+                                    move |this, event, window, cx| {
                                         cx.stop_propagation();
-                                        this.change(cx, |doc| {
-                                            doc.toggle_complete(&toggle);
-                                            Ok(())
-                                        });
+                                        this.toggle_task_complete(&toggle, event, window, cx);
                                     },
                                 )),
                             )
@@ -3003,12 +3005,9 @@ impl Workspace {
                     task.completed,
                     p,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, event, window, cx| {
                     cx.stop_propagation();
-                    this.change(cx, |doc| {
-                        doc.toggle_complete(&toggle);
-                        Ok(())
-                    });
+                    this.toggle_task_complete(&toggle, event, window, cx);
                 })),
             )
             .child(
@@ -3514,7 +3513,9 @@ impl Render for Workspace {
                     ),
             );
         }
-        self.window_background_layer().child(root.relative())
+        self.window_background_layer()
+            .child(root.relative())
+            .children(self.confetti.overlay(window, p))
     }
 }
 

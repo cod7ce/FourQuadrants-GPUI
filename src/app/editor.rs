@@ -1100,13 +1100,12 @@ impl Workspace {
                             completed,
                             p,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.change(cx, |doc| {
-                                doc.toggle_complete(&complete);
-                                Ok(())
-                            })
-                        })),
+                        .on_click(cx.listener(
+                            move |this, event, window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_task_complete(&complete, event, window, cx);
+                            },
+                        )),
                     )
                     .child(
                         div()

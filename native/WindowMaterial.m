@@ -53,6 +53,10 @@ static void FQRemoveMaterial(NSView *host) {
     objc_setAssociatedObject(host, &FQMaterialKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+int fq_reduce_motion(void) {
+    return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 1 : 0;
+}
+
 // Use the embedded artwork even when running the executable outside an app bundle.
 // NSData copies the borrowed Rust bytes; NSApplication retains the decoded image.
 int fq_set_application_icon(const unsigned char *bytes, size_t length) {

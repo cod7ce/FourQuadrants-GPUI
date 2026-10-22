@@ -219,6 +219,7 @@ impl Render for TaskDialog {
             .read(cx)
             .window_background_layer()
             .child(root.relative())
+            .children(workspace.read(cx).confetti.overlay(window, p))
     }
 }
 

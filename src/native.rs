@@ -16,6 +16,9 @@ unsafe extern "C" {
     fn fq_updater_workspace_closed();
     fn free(pointer: *mut std::ffi::c_void);
     fn fq_set_application_icon(bytes: *const u8, length: usize) -> i32;
+    fn fq_reduce_motion() -> i32;
+    fn fq_prepare_task_complete_sound(bytes: *const u8, length: usize);
+    fn fq_play_task_complete_sound();
     fn fq_configure_window_material(
         view: *mut std::ffi::c_void,
         enabled: i32,
@@ -52,6 +55,33 @@ pub struct UpdateStatus {
     pub message: String,
     pub version: Option<String>,
     pub can_check: bool,
+}
+
+pub fn prepare_task_complete_sound() {
+    #[cfg(target_os = "macos")]
+    // Copy the embedded PCM at startup; decoding and output preparation run off the UI thread.
+    unsafe {
+        let sound = include_bytes!("../assets/audio/task-complete.aiff");
+        fq_prepare_task_complete_sound(sound.as_ptr(), sound.len());
+    };
+}
+
+pub fn play_task_complete_sound() {
+    #[cfg(target_os = "macos")]
+    // Playback is queued behind startup preparation without blocking GPUI's main thread.
+    unsafe {
+        fq_play_task_complete_sound();
+    };
+}
+
+pub fn reduce_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    // Read on GPUI's main thread at each trigger so preference changes take effect.
+    unsafe {
+        fq_reduce_motion() != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 pub fn initialize_updater(enabled: bool) {
