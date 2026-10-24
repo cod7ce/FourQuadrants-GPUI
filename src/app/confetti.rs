@@ -1,5 +1,5 @@
 use super::*;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 const DURATION: Duration = Duration::from_millis(1000);
 const SPREAD: f32 = 1.5;
@@ -9,6 +9,7 @@ const PARTICLE_COUNT: usize = 20;
 pub(super) struct Confetti {
     generation: u64,
     burst: Option<Burst>,
+    settling: HashMap<String, u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -24,8 +25,32 @@ impl Confetti {
         self.generation
     }
 
-    fn clear(&mut self, generation: u64) -> bool {
-        generation == self.generation && self.burst.take().is_some()
+    fn clear(&mut self, id: &str, generation: u64) -> bool {
+        let mut changed = false;
+        if self.settling.get(id) == Some(&generation) {
+            self.settling.remove(id);
+            changed = true;
+        }
+        if generation == self.generation {
+            changed |= self.burst.take().is_some();
+        }
+        changed
+    }
+
+    fn grouped_as_completed(&self, task: &Task) -> bool {
+        task.completed && !self.settling.contains_key(&task.id)
+    }
+
+    fn retain_completed(&mut self, doc: &Document) {
+        let generation = self.generation;
+        let cancelled_current = self.settling.iter().any(|(id, pending)| {
+            *pending == generation && !doc.task(id).is_some_and(|task| task.completed)
+        });
+        self.settling
+            .retain(|id, _| doc.task(id).is_some_and(|task| task.completed));
+        if cancelled_current {
+            self.burst = None;
+        }
     }
 
     pub(super) fn overlay(&self, window: &Window, p: Palette) -> Option<AnyElement> {
@@ -127,10 +152,15 @@ impl Workspace {
         if previous.task_completion_sound != self.doc.settings.task_completion_sound {
             crate::native::set_task_complete_sound_enabled(self.doc.settings.task_completion_sound);
         }
+        self.confetti.retain_completed(&self.doc);
         if !self.doc.settings.task_confetti {
             self.confetti.burst = None;
-            self.confetti_cleanup = None;
+            self.confetti.settling.clear();
         }
+    }
+
+    pub(super) fn grouped_as_completed(&self, task: &Task) -> bool {
+        self.confetti.grouped_as_completed(task)
     }
 
     fn completion_animation_enabled(&self) -> bool {
@@ -178,25 +208,74 @@ impl Workspace {
             return;
         }
         let generation = self.confetti.start(window.window_handle(), origin);
-        self.confetti_cleanup = Some(cx.spawn(async move |this, cx| {
-            // Allow the last transparent animation frame before removing its state.
-            cx.background_executor()
-                .timer(DURATION + Duration::from_millis(100))
-                .await;
+        let id = id.to_owned();
+        // Save immediately, but keep each checked row in place until its feedback ends.
+        self.confetti.settling.insert(id.clone(), generation);
+        cx.spawn(async move |this, cx| {
+            // Regroup the row when the one-second burst has finished.
+            cx.background_executor().timer(DURATION).await;
             let _ = this.update(cx, |this, cx| {
-                if this.confetti.clear(generation) {
+                if this.confetti.clear(&id, generation) {
                     cx.notify();
                 }
             });
-        }));
+        })
+        .detach();
         cx.notify();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PARTICLE_COUNT, particle_frame};
+    use super::{Confetti, Document, PARTICLE_COUNT, Task, particle_frame};
     use gpui::{point, px};
+
+    #[test]
+    fn checked_tasks_stay_in_place_until_their_own_feedback_ends() {
+        let first = Task {
+            id: "first".into(),
+            completed: true,
+            ..Task::default()
+        };
+        let second = Task {
+            id: "second".into(),
+            completed: true,
+            ..Task::default()
+        };
+        let mut confetti = Confetti::default();
+        confetti.settling.insert(first.id.clone(), 1);
+        confetti.settling.insert(second.id.clone(), 2);
+        assert!(!confetti.grouped_as_completed(&first));
+        assert!(!confetti.grouped_as_completed(&second));
+        assert!(first.completed && second.completed);
+        assert!(confetti.clear(&first.id, 1));
+        assert!(confetti.grouped_as_completed(&first));
+        assert!(!confetti.grouped_as_completed(&second));
+        assert!(confetti.clear(&second.id, 2));
+        assert!(confetti.grouped_as_completed(&second));
+    }
+
+    #[test]
+    fn cancel_delete_and_recomplete_do_not_leave_or_release_stale_rows() {
+        let mut doc = Document::default();
+        doc.tasks.push(Task {
+            id: "task".into(),
+            completed: true,
+            ..Task::default()
+        });
+        let mut confetti = Confetti::default();
+        confetti.settling.insert("task".into(), 1);
+        doc.tasks[0].completed = false;
+        confetti.retain_completed(&doc);
+        assert!(confetti.settling.is_empty());
+        doc.tasks[0].completed = true;
+        confetti.settling.insert("task".into(), 2);
+        assert!(!confetti.clear("task", 1));
+        assert!(!confetti.grouped_as_completed(&doc.tasks[0]));
+        doc.tasks.clear();
+        confetti.retain_completed(&doc);
+        assert!(confetti.settling.is_empty());
+    }
 
     #[test]
     fn particles_stay_local_and_fade_out() {

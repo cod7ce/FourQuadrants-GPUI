@@ -194,7 +194,6 @@ pub struct Workspace {
     sidebar_overlay: bool,
     dragging_task: Option<String>,
     confetti: confetti::Confetti,
-    confetti_cleanup: Option<gpui::Task<()>>,
     background_key: String,
     background_render: Option<PathBuf>,
     clipboard_text: Option<String>,
@@ -626,7 +625,6 @@ impl Workspace {
             sidebar_overlay: false,
             dragging_task: None,
             confetti: confetti::Confetti::default(),
-            confetti_cleanup: None,
             background_key: String::new(),
             background_render: None,
             clipboard_text: None,
@@ -1280,7 +1278,7 @@ impl Workspace {
     }
 
     fn visible(&self, task: &Task, cx: &App) -> bool {
-        if self.doc.settings.hide_completed && task.completed {
+        if self.doc.settings.hide_completed && self.grouped_as_completed(task) {
             return false;
         }
         if let Some(tag) = &self.tag_filter
@@ -1462,10 +1460,9 @@ impl Workspace {
         let target = self.doc.task(target).expect("validated target");
         self.page != Page::Board
             || target.parent_id.is_some()
-            || self
-                .doc
-                .task(source)
-                .is_some_and(|task| task.completed == target.completed)
+            || self.doc.task(source).is_some_and(|task| {
+                self.grouped_as_completed(task) == self.grouped_as_completed(target)
+            })
     }
 
     fn row(
@@ -1496,7 +1493,8 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         let is_collapsed = self.collapsed.contains(&id);
-        let show_children = !is_collapsed && !task.completed && !children.is_empty();
+        let show_children =
+            !is_collapsed && !self.grouped_as_completed(task) && !children.is_empty();
         let branch_y = px(8.) + window.rem_size() * (0.875 * 1.45 / 2.);
         let child_indent = px(TASK_CHECKBOX_SIZE + TASK_TITLE_GAP);
         let branch_width = child_indent - px(TASK_CHECKBOX_SIZE / 2. + TASK_CONNECTOR_GAP);
@@ -2552,12 +2550,15 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         tasks.sort_by(|a, b| {
-            a.completed
-                .cmp(&b.completed)
+            self.grouped_as_completed(a)
+                .cmp(&self.grouped_as_completed(b))
                 .then(a.sort_order.total_cmp(&b.sort_order))
         });
         let (done, total) = week_completion(&self.doc, self.week)[q];
-        let completed = tasks.iter().filter(|task| task.completed).count();
+        let completed = tasks
+            .iter()
+            .filter(|task| self.grouped_as_completed(task))
+            .count();
         div()
             .id(("quadrant", q))
             .when(stacked, |el| el.w_full().min_h(px(200.)).flex_shrink_0())
@@ -2658,7 +2659,7 @@ impl Workspace {
                     .children(
                         tasks
                             .iter()
-                            .filter(|task| !task.completed)
+                            .filter(|task| !self.grouped_as_completed(task))
                             .map(|task| self.row(task, 0, window, cx)),
                     )
                     .when(completed > 0, |el| {
@@ -2667,7 +2668,7 @@ impl Workspace {
                     .children(
                         tasks
                             .iter()
-                            .filter(|task| task.completed)
+                            .filter(|task| self.grouped_as_completed(task))
                             .map(|task| self.row(task, 0, window, cx)),
                     ),
             )
@@ -2680,7 +2681,9 @@ impl Workspace {
             .doc
             .tasks
             .iter()
-            .filter(|t| t.parent_id.is_none() && !t.completed && t.due_date.is_none())
+            .filter(|t| {
+                t.parent_id.is_none() && !self.grouped_as_completed(t) && t.due_date.is_none()
+            })
             .cloned()
             .collect::<Vec<_>>();
         div()
@@ -2781,7 +2784,7 @@ impl Workspace {
             .tasks
             .iter()
             .filter(|t| {
-                !t.completed
+                !self.grouped_as_completed(t)
                     && self.visible(t, cx)
                     && t.agenda_date().is_some_and(|d| {
                         d >= self.week && d < self.week + Duration::days(7) && d < model::today()
@@ -2816,7 +2819,10 @@ impl Workspace {
             .collect::<Vec<_>>();
         unplanned.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
         if !unplanned.is_empty() {
-            let completed = unplanned.iter().filter(|task| task.completed).count();
+            let completed = unplanned
+                .iter()
+                .filter(|task| self.grouped_as_completed(task))
+                .count();
             body = body.child(
                 div()
                     .id("agenda-unplanned")
@@ -2851,7 +2857,7 @@ impl Workspace {
                             .children(
                                 unplanned
                                     .iter()
-                                    .filter(|task| !task.completed)
+                                    .filter(|task| !self.grouped_as_completed(task))
                                     .map(|task| self.flat_row(task, window, cx)),
                             )
                             .when(completed > 0, |el| {
@@ -2860,7 +2866,7 @@ impl Workspace {
                             .children(
                                 unplanned
                                     .iter()
-                                    .filter(|task| task.completed)
+                                    .filter(|task| self.grouped_as_completed(task))
                                     .map(|task| self.flat_row(task, window, cx)),
                             ),
                     ),
@@ -2876,12 +2882,15 @@ impl Workspace {
                     t.agenda_date() == Some(date)
                         && !is_unplanned_in_week(t, self.week)
                         && self.visible(t, cx)
-                        && (t.completed || date >= model::today())
+                        && (self.grouped_as_completed(t) || date >= model::today())
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             tasks.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
-            let completed = tasks.iter().filter(|task| task.completed).count();
+            let completed = tasks
+                .iter()
+                .filter(|task| self.grouped_as_completed(task))
+                .count();
             // Descendants have their own scheduled day; do not render them twice in this view.
             body = body.child(
                 div()
@@ -2948,7 +2957,7 @@ impl Workspace {
                             .children(
                                 tasks
                                     .iter()
-                                    .filter(|task| !task.completed)
+                                    .filter(|task| !self.grouped_as_completed(task))
                                     .map(|task| self.flat_row(task, window, cx)),
                             )
                             .when(completed > 0, |el| {
@@ -2957,7 +2966,7 @@ impl Workspace {
                             .children(
                                 tasks
                                     .iter()
-                                    .filter(|task| task.completed)
+                                    .filter(|task| self.grouped_as_completed(task))
                                     .map(|task| self.flat_row(task, window, cx)),
                             ),
                     ),
@@ -3075,13 +3084,16 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .gap_3();
-                for task in tasks.iter().filter(|task| !task.completed) {
+                for task in tasks.iter().filter(|task| !self.grouped_as_completed(task)) {
                     list = list.child(self.flat_row(task, window, cx));
                 }
-                let completed = tasks.iter().filter(|task| task.completed).count();
+                let completed = tasks
+                    .iter()
+                    .filter(|task| self.grouped_as_completed(task))
+                    .count();
                 if completed > 0 {
                     list = list.child(self.completed_heading(completed, p));
-                    for task in tasks.iter().filter(|task| task.completed) {
+                    for task in tasks.iter().filter(|task| self.grouped_as_completed(task)) {
                         list = list.child(self.flat_row(task, window, cx));
                     }
                 }

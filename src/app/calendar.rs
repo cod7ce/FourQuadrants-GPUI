@@ -294,7 +294,10 @@ impl Workspace {
             .into_iter()
             .filter(|task| task.agenda_date() == Some(self.day))
             .collect::<Vec<_>>();
-        let completed = day_tasks.iter().filter(|task| task.completed).count();
+        let completed = day_tasks
+            .iter()
+            .filter(|task| self.grouped_as_completed(task))
+            .count();
         let pending = day_tasks.len() - completed;
         let date_title = if en {
             self.day.format("%B %-d, %A").to_string()
@@ -389,7 +392,7 @@ impl Workspace {
                         .children(
                             day_tasks
                                 .iter()
-                                .filter(|task| !task.completed)
+                                .filter(|task| !self.grouped_as_completed(task))
                                 .map(|task| self.flat_row(task, window, cx)),
                         )
                         .when(completed > 0, |el| {
@@ -398,7 +401,7 @@ impl Workspace {
                         .children(
                             day_tasks
                                 .iter()
-                                .filter(|task| task.completed)
+                                .filter(|task| self.grouped_as_completed(task))
                                 .map(|task| self.flat_row(task, window, cx)),
                         ),
                 );

@@ -200,6 +200,7 @@ jobs:
           bash scripts/build-native.sh
           target/native/four-quadrants-helper self-test
           bash scripts/test-updater.sh
+          bash scripts/test-completion-sound.sh
           swift scripts/update-key.swift self-test
       - name: Build signed app bundle
         run: bash scripts/bundle.sh release

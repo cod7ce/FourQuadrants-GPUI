@@ -1,13 +1,25 @@
 #import <AVFAudio/AVFAudio.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <Foundation/Foundation.h>
+#import <mach/mach_time.h>
 
 static dispatch_queue_t FQCompletionSoundQueue;
 static AVAudioEngine *FQCompletionEngine;
 static AVAudioPlayerNode *FQCompletionPlayer;
 static AVAudioPCMBuffer *FQCompletionBuffer;
 static id FQCompletionConfigurationObserver;
+static dispatch_source_t FQCompletionHealthTimer;
 static BOOL FQCompletionSoundEnabled;
+static BOOL FQCompletionNeedsRebuild;
+static uint64_t FQCompletionStartedAt;
+static NSUInteger FQCompletionRequest;
+static NSUInteger FQCompletionAttempt;
+static BOOL FQCompletionPending;
+static BOOL FQCompletionRetried;
+
+static const NSTimeInterval FQCompletionHealthInterval = 30;
+static const NSTimeInterval FQCompletionStallGrace = 1;
+static const NSTimeInterval FQCompletionPlaybackTimeout = 1.5;
 
 static OSStatus FQReadSoundBytes(void *context, SInt64 position, UInt32 count, void *destination, UInt32 *actual) {
     NSData *data = (__bridge NSData *)context;
@@ -52,14 +64,82 @@ static AVAudioPCMBuffer *FQDecodeCompletionSound(NSData *data) {
     return buffer;
 }
 
+static BOOL FQEnsureCompletionAudio(void);
+static void FQPlayCompletionAttempt(NSUInteger request);
+static void FQRetryCompletionSound(NSUInteger request, NSUInteger attempt);
+
+// All audio state and recovery work belongs to FQCompletionSoundQueue.
+static void FQRetireCompletionAudio(void) {
+    // stop also invokes buffer callbacks; invalidate them before touching the nodes.
+    FQCompletionAttempt++;
+    if (FQCompletionConfigurationObserver) {
+        [NSNotificationCenter.defaultCenter removeObserver:FQCompletionConfigurationObserver];
+        FQCompletionConfigurationObserver = nil;
+    }
+    [FQCompletionPlayer stop];
+    [FQCompletionEngine stop];
+    FQCompletionPlayer = nil;
+    FQCompletionEngine = nil;
+    FQCompletionStartedAt = 0;
+}
+
+static void FQCompletionConfigurationChanged(AVAudioEngine *engine) {
+    if (engine != FQCompletionEngine) return;
+    FQCompletionNeedsRebuild = YES;
+    if (!FQCompletionSoundEnabled) return;
+    if (FQCompletionPending) FQRetryCompletionSound(FQCompletionRequest, FQCompletionAttempt);
+    else FQEnsureCompletionAudio();
+}
+
+static BOOL FQCreateCompletionAudio(void) {
+    FQRetireCompletionAudio();
+    FQCompletionNeedsRebuild = YES;
+    if (!FQCompletionBuffer) return NO;
+    FQCompletionEngine = [[AVAudioEngine alloc] init];
+    FQCompletionPlayer = [[AVAudioPlayerNode alloc] init];
+    FQCompletionPlayer.volume = 0.5f;
+    [FQCompletionEngine attachNode:FQCompletionPlayer];
+#if defined(__MAC_27_0)
+    if (@available(macOS 27.0, *)) {
+        NSError *error = nil;
+        if (![FQCompletionEngine connect:FQCompletionPlayer to:FQCompletionEngine.mainMixerNode
+                                  format:FQCompletionBuffer.format error:&error]) {
+            NSLog(@"Unable to connect task completion audio: %@", error.localizedDescription);
+            FQRetireCompletionAudio();
+            return NO;
+        }
+    } else
+#endif
+    {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [FQCompletionEngine connect:FQCompletionPlayer to:FQCompletionEngine.mainMixerNode
+                            format:FQCompletionBuffer.format];
+#pragma clang diagnostic pop
+    }
+    FQCompletionConfigurationObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:AVAudioEngineConfigurationChangeNotification object:FQCompletionEngine queue:nil
+        usingBlock:^(NSNotification *notification) {
+            dispatch_async(FQCompletionSoundQueue, ^{
+                @autoreleasepool {
+                    FQCompletionConfigurationChanged(notification.object);
+                }
+            });
+        }];
+    [FQCompletionEngine prepare];
+    FQCompletionNeedsRebuild = NO;
+    return YES;
+}
+
 static BOOL FQStartCompletionEngine(void) {
-    if (!FQCompletionSoundEnabled || !FQCompletionEngine) return NO;
     if (!FQCompletionEngine.isRunning) {
         NSError *error = nil;
         if (![FQCompletionEngine startAndReturnError:&error]) {
             NSLog(@"Unable to start task completion audio: %@", error.localizedDescription);
+            FQCompletionNeedsRebuild = YES;
             return NO;
         }
+        FQCompletionStartedAt = mach_absolute_time();
     }
     if (!FQCompletionPlayer.isPlaying) {
 #if defined(__MAC_27_0)
@@ -67,6 +147,7 @@ static BOOL FQStartCompletionEngine(void) {
             NSError *error = nil;
             if (![FQCompletionPlayer playAndReturnError:&error]) {
                 NSLog(@"Unable to start task completion player: %@", error.localizedDescription);
+                FQCompletionNeedsRebuild = YES;
                 return NO;
             }
         } else
@@ -81,6 +162,109 @@ static BOOL FQStartCompletionEngine(void) {
     return YES;
 }
 
+static BOOL FQCompletionRenderIsFresh(AVAudioTime *render, uint64_t now) {
+    // Host time is monotonic. Missing render timestamps are allowed only during startup.
+    uint64_t last = render.isHostTimeValid ? render.hostTime : FQCompletionStartedAt;
+    return last != 0 && (last >= now ||
+        [AVAudioTime secondsForHostTime:now - last] < FQCompletionStallGrace);
+}
+
+static BOOL FQCompletionAudioIsHealthy(void) {
+    uint64_t now = mach_absolute_time();
+    return FQCompletionEngine.isRunning && FQCompletionPlayer.isPlaying &&
+        FQCompletionRenderIsFresh(FQCompletionEngine.outputNode.lastRenderTime, now) &&
+        FQCompletionRenderIsFresh(FQCompletionPlayer.lastRenderTime, now);
+}
+
+static BOOL FQEnsureCompletionAudio(void) {
+    if (!FQCompletionSoundEnabled || !FQCompletionBuffer) return NO;
+    if (FQCompletionEngine.isRunning && !FQCompletionAudioIsHealthy()) {
+        NSLog(@"Task completion audio stopped rendering; rebuilding");
+        FQCompletionNeedsRebuild = YES;
+    }
+    if (FQCompletionNeedsRebuild || !FQCompletionEngine || !FQCompletionPlayer) {
+        if (!FQCreateCompletionAudio()) return NO;
+    }
+    return FQStartCompletionEngine();
+}
+
+static void FQCheckCompletionAudioHealth(void) {
+    if (!FQCompletionSoundEnabled) return;
+    if (FQCompletionPending) {
+        if (FQCompletionNeedsRebuild || !FQCompletionAudioIsHealthy()) {
+            FQRetryCompletionSound(FQCompletionRequest, FQCompletionAttempt);
+        }
+    } else {
+        FQEnsureCompletionAudio();
+    }
+}
+
+static void FQStartCompletionHealthTimer(void) {
+    if (FQCompletionHealthTimer) return;
+    FQCompletionHealthTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, FQCompletionSoundQueue);
+    dispatch_source_set_timer(FQCompletionHealthTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(FQCompletionHealthInterval * NSEC_PER_SEC)),
+        (uint64_t)(FQCompletionHealthInterval * NSEC_PER_SEC), (uint64_t)(2 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(FQCompletionHealthTimer, ^{
+        @autoreleasepool {
+            FQCheckCompletionAudioHealth();
+        }
+    });
+    dispatch_resume(FQCompletionHealthTimer);
+}
+
+static BOOL FQCompletionAttemptIsCurrent(NSUInteger request, NSUInteger attempt) {
+    return FQCompletionSoundEnabled && FQCompletionPending &&
+        request == FQCompletionRequest && attempt == FQCompletionAttempt;
+}
+
+static void FQRetryCompletionSound(NSUInteger request, NSUInteger attempt) {
+    if (!FQCompletionAttemptIsCurrent(request, attempt)) return;
+    FQCompletionNeedsRebuild = YES;
+    if (FQCompletionRetried) {
+        NSLog(@"Task completion audio recovery failed; abandoning this sound");
+        FQCompletionPending = NO;
+        FQRetireCompletionAudio();
+        return;
+    }
+    NSLog(@"Task completion audio interrupted or timed out; rebuilding and retrying once");
+    FQCompletionRetried = YES;
+    FQPlayCompletionAttempt(request);
+}
+
+static void FQPlayCompletionAttempt(NSUInteger request) {
+    if (!FQCompletionSoundEnabled || !FQCompletionPending || request != FQCompletionRequest) return;
+    if (!FQEnsureCompletionAudio()) {
+        FQRetryCompletionSound(request, FQCompletionAttempt);
+        return;
+    }
+    NSUInteger attempt = ++FQCompletionAttempt;
+    // Keep the prepared player running; restarting it on every click adds latency.
+    [FQCompletionPlayer scheduleBuffer:FQCompletionBuffer atTime:nil
+        options:AVAudioPlayerNodeBufferInterrupts
+        completionCallbackType:AVAudioPlayerNodeCompletionDataPlayedBack
+        completionHandler:^(AVAudioPlayerNodeCompletionCallbackType type) {
+            dispatch_async(FQCompletionSoundQueue, ^{
+                if (!FQCompletionAttemptIsCurrent(request, attempt)) return;
+                if (type == AVAudioPlayerNodeCompletionDataPlayedBack &&
+                    !FQCompletionNeedsRebuild && FQCompletionAudioIsHealthy()) {
+                    FQCompletionPending = NO;
+                } else {
+                    FQRetryCompletionSound(request, attempt);
+                }
+            });
+        }];
+    NSTimeInterval duration = FQCompletionBuffer.frameLength / FQCompletionBuffer.format.sampleRate;
+    NSTimeInterval timeout = MAX(FQCompletionPlaybackTimeout,
+        duration + MAX(0.0, FQCompletionPlayer.outputPresentationLatency) + FQCompletionStallGrace);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(timeout * NSEC_PER_SEC)), FQCompletionSoundQueue, ^{
+        @autoreleasepool {
+            FQRetryCompletionSound(request, attempt);
+        }
+    });
+}
+
 void fq_prepare_task_complete_sound(const unsigned char *bytes, size_t length) {
     if (![NSThread isMainThread] || !bytes || length == 0) return;
     static dispatch_once_t once;
@@ -90,40 +274,7 @@ void fq_prepare_task_complete_sound(const unsigned char *bytes, size_t length) {
         dispatch_async(FQCompletionSoundQueue, ^{
             @autoreleasepool {
                 FQCompletionBuffer = FQDecodeCompletionSound(data);
-                if (!FQCompletionBuffer) {
-                    NSLog(@"Unable to decode task completion sound");
-                    return;
-                }
-                FQCompletionEngine = [[AVAudioEngine alloc] init];
-                FQCompletionPlayer = [[AVAudioPlayerNode alloc] init];
-                FQCompletionPlayer.volume = 0.5f;
-                [FQCompletionEngine attachNode:FQCompletionPlayer];
-#if defined(__MAC_27_0)
-                if (@available(macOS 27.0, *)) {
-                    NSError *error = nil;
-                    if (![FQCompletionEngine connect:FQCompletionPlayer to:FQCompletionEngine.mainMixerNode
-                                              format:FQCompletionBuffer.format error:&error]) {
-                        NSLog(@"Unable to connect task completion audio: %@", error.localizedDescription);
-                        FQCompletionEngine = nil;
-                        return;
-                    }
-                } else
-#endif
-                {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                    [FQCompletionEngine connect:FQCompletionPlayer to:FQCompletionEngine.mainMixerNode
-                                        format:FQCompletionBuffer.format];
-#pragma clang diagnostic pop
-                }
-                FQCompletionConfigurationObserver = [NSNotificationCenter.defaultCenter
-                    addObserverForName:AVAudioEngineConfigurationChangeNotification object:FQCompletionEngine queue:nil
-                    usingBlock:^(NSNotification * __unused notification) {
-                        // Device changes may stop the engine; restart it on its owning queue.
-                        dispatch_async(FQCompletionSoundQueue, ^{ FQStartCompletionEngine(); });
-                    }];
-                [FQCompletionEngine prepare];
-                // Enabling the preference starts the prepared output path.
+                if (!FQCompletionBuffer) NSLog(@"Unable to decode task completion sound");
             }
         });
     });
@@ -135,10 +286,16 @@ void fq_set_task_complete_sound_enabled(int enabled) {
         @autoreleasepool {
             FQCompletionSoundEnabled = enabled != 0;
             if (FQCompletionSoundEnabled) {
-                FQStartCompletionEngine();
+                FQCheckCompletionAudioHealth();
+                FQStartCompletionHealthTimer();
             } else {
-                [FQCompletionPlayer stop];
-                [FQCompletionEngine stop];
+                FQCompletionRequest++;
+                FQCompletionPending = NO;
+                if (FQCompletionHealthTimer) {
+                    dispatch_source_cancel(FQCompletionHealthTimer);
+                    FQCompletionHealthTimer = nil;
+                }
+                FQRetireCompletionAudio();
             }
         }
     });
@@ -148,10 +305,11 @@ void fq_play_task_complete_sound(void) {
     if (![NSThread isMainThread] || !FQCompletionSoundQueue) return;
     dispatch_async(FQCompletionSoundQueue, ^{
         @autoreleasepool {
-            if (!FQCompletionBuffer || !FQStartCompletionEngine()) return;
-            // Replace a still-playing burst without stopping the engine or stacking sounds.
-            [FQCompletionPlayer scheduleBuffer:FQCompletionBuffer atTime:nil
-                                       options:AVAudioPlayerNodeBufferInterrupts completionHandler:nil];
+            if (!FQCompletionSoundEnabled || !FQCompletionBuffer) return;
+            FQCompletionRequest++;
+            FQCompletionPending = YES;
+            FQCompletionRetried = NO;
+            FQPlayCompletionAttempt(FQCompletionRequest);
         }
     });
 }
