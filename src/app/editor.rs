@@ -723,9 +723,32 @@ impl Workspace {
                             .text_size(px(11.))
                             .text_color(p.muted)
                             .child(format!("{} · {}", task.week_start, status)),
-                    ),
+                    )
+                    .children(self.completion_metadata(&task, p, window)),
             );
 
+        let reminder = parse_date(&editor.reminder.read(cx).value(cx))
+            .ok()
+            .flatten();
+        let reminder_notice =
+            if crate::store::default_data_path().ok().as_ref() != Some(&self.store.path) {
+                Some(self.t(
+                    "测试数据仅保存提醒时间，不发送系统通知",
+                    "Test data saves reminder times without sending notifications",
+                ))
+            } else if reminder.is_some() && task.completed {
+                Some(self.t(
+                    "已完成任务不再发送提醒",
+                    "Completed tasks do not send reminders",
+                ))
+            } else if reminder.is_some_and(|date| date <= Utc::now()) {
+                Some(self.t(
+                    "提醒时间已过，请选择未来时间",
+                    "This reminder time has passed; choose a future time",
+                ))
+            } else {
+                None
+            };
         let mut properties = div()
             .w(px(340.))
             .flex_shrink_0()
@@ -777,7 +800,10 @@ impl Workspace {
                         self.t("提醒时间 · 本地时间", "Reminder · local time"),
                         p,
                     ))
-                    .child(editor.reminder.clone()),
+                    .child(editor.reminder.clone())
+                    .when_some(reminder_notice, |el, notice| {
+                        el.child(label(notice, p).whitespace_normal())
+                    }),
             );
 
         let mut quadrants = div().grid().grid_cols(2).gap(px(4.));
@@ -1111,11 +1137,18 @@ impl Workspace {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_sm()
-                            .line_height(relative(1.45))
-                            .whitespace_normal()
-                            .text_color(if completed { p.muted } else { p.text })
-                            .child(self.task_title(sub, window, cx)),
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .line_height(relative(1.45))
+                                    .whitespace_normal()
+                                    .text_color(if completed { p.muted } else { p.text })
+                                    .child(self.task_title(sub, window, cx)),
+                            )
+                            .children(self.completion_metadata(sub, p, window)),
                     )
                     .child(
                         icon_button(
@@ -1307,7 +1340,7 @@ impl Workspace {
                             .hover(move |style| style.bg(p.accent.opacity(0.85)))
                             .child(self.t("保存", "Save"))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_editor(window, cx);
+                                this.close_task_dialog(window, cx);
                             })),
                     ),
             )

@@ -22,12 +22,22 @@ struct PlannedReminder {
     var identifier: String { "task-" + task.id }
 }
 
-enum ReminderPlan {
-    static func load(_ url: URL, now: Date = .now) throws -> [PlannedReminder] {
+struct ReminderPlan {
+    let pending: [PlannedReminder]
+    // An overdue, unfinished task still owns its delivered notification. Rebuilding
+    // future requests must not dismiss a notification the user has not acted on.
+    let activeIDs: Set<String>
+
+    func obsoleteDelivered(_ identifiers: [String]) -> [String] {
+        identifiers.filter { $0.hasPrefix("task-") && !activeIDs.contains($0) }
+    }
+
+    static func load(_ url: URL, now: Date = .now) throws -> ReminderPlan {
         let document = try JSONDecoder().decode(ReminderDocument.self, from: Data(contentsOf: url))
         guard (1...2).contains(document.schemaVersion) else { throw HelperError("Unsupported reminder JSON schemaVersion.") }
         var seen = Set<String>()
         var result: [PlannedReminder] = []
+        var activeIDs = Set<String>()
         for task in document.tasks {
             guard !task.id.isEmpty, seen.insert(task.id).inserted else {
                 throw HelperError("Reminder JSON contains an empty or duplicate task id.")
@@ -36,9 +46,13 @@ enum ReminderPlan {
             guard let date = DateCodec.parse(value) else {
                 throw HelperError("Task \(task.id) has an invalid ISO8601 remindAt value.")
             }
-            if !task.completed && date > now { result.append(PlannedReminder(task: task, date: date)) }
+            guard !task.completed else { continue }
+            let reminder = PlannedReminder(task: task, date: date)
+            activeIDs.insert(reminder.identifier)
+            if date > now { result.append(reminder) }
         }
-        return result.sorted { ($0.date, $0.identifier) < ($1.date, $1.identifier) }
+        return ReminderPlan(pending: result.sorted { ($0.date, $0.identifier) < ($1.date, $1.identifier) },
+                            activeIDs: activeIDs)
     }
 }
 
@@ -71,9 +85,17 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     func status() async {
         let settings = await center.notificationSettings()
         let pending = await center.pendingNotificationRequests()
+        let delivered = await center.deliveredNotifications()
+        // Counts and settings only: never expose task titles, bodies or identifiers.
         HelperCLI.printJSON(["authorizationStatus": settings.authorizationStatus.rawValue,
+                             "alertSetting": settings.alertSetting.rawValue,
+                             "alertStyle": settings.alertStyle.rawValue,
+                             "soundSetting": settings.soundSetting.rawValue,
+                             "notificationCenterSetting": settings.notificationCenterSetting.rawValue,
                              "pendingCount": pending.count,
-                             "bundleIdentifier": Bundle.main.bundleIdentifier ?? ""])
+                             "deliveredCount": delivered.count,
+                             "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+                             "bundlePath": Bundle.main.bundleURL.path])
     }
 
     func notify(id: String, title: String, body: String) async throws {
@@ -88,19 +110,18 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         HelperCLI.printJSON(["scheduled": true, "id": id])
     }
 
-    func sync(_ plan: [PlannedReminder]) async throws {
+    func sync(_ plan: ReminderPlan) async throws {
         // No permission prompt is needed just to remove obsolete reminders.
-        if !plan.isEmpty { try await authorize() }
-        let wanted = Set(plan.map(\.identifier))
+        if !plan.pending.isEmpty { try await authorize() }
+        let wanted = Set(plan.pending.map(\.identifier))
         let pending = await center.pendingNotificationRequests()
         let obsolete = pending.map(\.identifier).filter { $0.hasPrefix("task-") && !wanted.contains($0) }
         center.removePendingNotificationRequests(withIdentifiers: obsolete)
         let delivered = await center.deliveredNotifications()
-        let obsoleteDelivered = delivered.map { $0.request.identifier }
-            .filter { $0.hasPrefix("task-") && !wanted.contains($0) }
+        let obsoleteDelivered = plan.obsoleteDelivered(delivered.map { $0.request.identifier })
         center.removeDeliveredNotifications(withIdentifiers: obsoleteDelivered)
 
-        for reminder in plan {
+        for reminder in plan.pending {
             // Scheduling takes time; skip reminders which expired during authorization.
             guard reminder.date > .now else {
                 center.removePendingNotificationRequests(withIdentifiers: [reminder.identifier])
@@ -127,7 +148,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         // rather than claiming that all reminders were scheduled when some were discarded.
         let after = await center.pendingNotificationRequests()
         let afterIDs = Set(after.map(\.identifier))
-        let stillFuture = Set(plan.filter { $0.date > Date.now.addingTimeInterval(1) }.map(\.identifier))
+        let stillFuture = Set(plan.pending.filter { $0.date > Date.now.addingTimeInterval(1) }.map(\.identifier))
         let missing = stillFuture.subtracting(afterIDs)
         guard missing.isEmpty else {
             throw HelperError("macOS did not retain \(missing.count) reminders (system pending-notification limit may have been reached).")

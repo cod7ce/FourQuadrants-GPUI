@@ -443,16 +443,67 @@ pub fn convert_note(content: &str) -> Result<ConvertedNote> {
 }
 
 pub fn sync_reminders(path: &Path) -> Result<String> {
+    // Keep the safety boundary here as well as in the UI: an alternate store
+    // must never replace the production helper's notification queue.
+    if path != store::default_data_path()? {
+        bail!("演示数据不触发系统通知 / Notifications disabled for demo data");
+    }
     static SYNC: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SYNC
         .lock()
         .map_err(|_| anyhow::anyhow!("Reminder synchronization lock failed"))?;
     let raw = run(&["sync-reminders".as_ref(), path.as_os_str()])?;
-    let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    reminder_sync_message(&raw)
+}
+
+fn reminder_sync_message(raw: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct SyncResult {
+        scheduled: u64,
+        removed: u64,
+    }
+    let result: SyncResult = serde_json::from_str(raw)
+        .context("无法读取提醒同步结果 / Invalid reminder sync response")?;
     Ok(format!(
-        "提醒已同步 / Reminders synced: {}",
-        value["scheduled"].as_u64().unwrap_or(0)
+        "提醒已同步 / Reminders synced: {}，已移除 / Removed: {}",
+        result.scheduled, result.removed
     ))
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_helper_results_are_errors_not_successful_zero_counts() {
+        for raw in [
+            "",
+            "not json",
+            "null",
+            "{}",
+            r#"{"scheduled":3}"#,
+            r#"{"scheduled":"3","removed":0}"#,
+            r#"{"scheduled":-1,"removed":0}"#,
+        ] {
+            assert!(reminder_sync_message(raw).is_err(), "accepted {raw:?}");
+        }
+        assert!(
+            reminder_sync_message(r#"{"scheduled":3,"removed":1}"#)
+                .unwrap()
+                .contains("Reminders synced: 3")
+        );
+        assert!(reminder_sync_message(r#"{"scheduled":0,"removed":0}"#).is_ok());
+    }
+
+    #[test]
+    fn alternate_store_is_rejected_before_invoking_a_helper() {
+        let error = sync_reminders(Path::new("target/notification-test/data.json")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Notifications disabled for demo data")
+        );
+    }
 }
 
 pub fn prepare_background(input: &Path, output: &Path, blur: f32) -> Result<()> {

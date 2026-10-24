@@ -316,6 +316,26 @@ pub fn glyph(icon: impl Into<Icon>) -> Icon {
     Icon::new(icon).with_size(px(15.))
 }
 
+fn metadata_item(window: &Window, icon: IconName, text: impl Into<SharedString>) -> Div {
+    // text_xs is 0.75rem. Match the icon to that size and lift it slightly so its
+    // optical center meets the glyph ink instead of the taller line box center.
+    let text_size = window.rem_size() * 0.75;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .text_xs()
+        .line_height(relative(1.))
+        .child(
+            div()
+                .flex_none()
+                .relative()
+                .top(-text_size * 0.08)
+                .child(glyph(icon).with_size(text_size)),
+        )
+        .child(div().whitespace_nowrap().child(text.into()))
+}
+
 pub fn icon_button(
     id: impl Into<ElementId>,
     icon: impl Into<Icon>,
@@ -488,8 +508,62 @@ fn task_connector(connector: TaskConnector, color: Hsla) -> impl IntoElement {
     .inset_0()
 }
 
-fn is_unplanned_in_week(task: &Task, week: NaiveDate) -> bool {
-    task.due_date.is_none() && model::week_start(task.week_start) == model::week_start(week)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeeklyGroup {
+    Unplanned,
+    Overdue,
+    Day(NaiveDate),
+}
+
+fn weekly_group(
+    task: &Task,
+    week: NaiveDate,
+    today: NaiveDate,
+    completed: bool,
+) -> Option<WeeklyGroup> {
+    // Use the displayed completion state so a newly checked row stays put during confetti.
+    let week = model::week_start(week);
+    let date = task
+        .due_date
+        .or(if completed { task.completed_at } else { None });
+    let date = match date {
+        Some(date) => date.with_timezone(&chrono::Local).date_naive(),
+        None if !completed => {
+            return (model::week_start(task.week_start) == week).then_some(WeeklyGroup::Unplanned);
+        }
+        // Legacy completed tasks can lack both timestamps; keep them visible in their assigned week.
+        None => model::week_start(task.week_start),
+    };
+    if date < week || date >= week + Duration::days(7) {
+        return None;
+    }
+    Some(if !completed && date < today {
+        WeeklyGroup::Overdue
+    } else {
+        WeeklyGroup::Day(date)
+    })
+}
+
+fn weekly_order_date(task: &Task, completed: bool) -> Option<chrono::DateTime<chrono::Utc>> {
+    if completed {
+        task.completed_at.or(task.due_date)
+    } else {
+        task.due_date
+    }
+}
+
+/// Weekly boxes list open tasks by due time and completed tasks by completion
+/// time. Tasks without either keep their manual order after the dated ones.
+fn weekly_order(a: &Task, a_completed: bool, b: &Task, b_completed: bool) -> std::cmp::Ordering {
+    let a_date = weekly_order_date(a, a_completed);
+    let b_date = weekly_order_date(b, b_completed);
+    match (a_date, b_date) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| a.sort_order.total_cmp(&b.sort_order))
 }
 
 fn matches_tag_week(task: &Task, tag: &str, week: NaiveDate) -> bool {
@@ -595,7 +669,7 @@ impl Workspace {
             })
             .unwrap_or(true)
         });
-        Self {
+        let mut workspace = Self {
             doc,
             store,
             page: Page::Board,
@@ -634,7 +708,9 @@ impl Workspace {
             rich_pending: Vec::new(),
             carry_selection: None,
             _subscriptions: subscriptions,
-        }
+        };
+        workspace.reconcile_reminders(cx);
+        workspace
     }
 
     pub fn prepare_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -1406,7 +1482,25 @@ impl Workspace {
         StyledText::new(text).with_highlights(highlights)
     }
 
-    fn task_metadata(&self, task: &Task, p: Palette) -> Div {
+    fn completion_metadata(&self, task: &Task, p: Palette, window: &Window) -> Option<Div> {
+        task.completed
+            .then_some(task.completed_at)
+            .flatten()
+            .map(|date| {
+                metadata_item(
+                    window,
+                    IconName::Check,
+                    format!(
+                        "{} {}",
+                        self.t("完成于", "Completed"),
+                        date.with_timezone(&chrono::Local).format("%Y/%m/%d %H:%M")
+                    ),
+                )
+                .text_color(p.muted)
+            })
+    }
+
+    fn task_metadata(&self, task: &Task, p: Palette, window: &Window) -> Div {
         div()
             .flex()
             .flex_wrap()
@@ -1429,26 +1523,18 @@ impl Workspace {
                     _ => local.format("%m/%d %H:%M").to_string(),
                 };
                 el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .text_color(if is_near_due { p.quadrant[0] } else { p.muted })
-                        .child(glyph(IconName::Calendar).with_size(px(12.)))
-                        .child(due_label),
+                    metadata_item(window, IconName::Calendar, due_label)
+                        .text_color(if is_near_due { p.quadrant[0] } else { p.muted }),
                 )
             })
             .when(task.remind_at.is_some(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .text_color(p.muted)
-                        .child(glyph(IconName::Bell).with_size(px(12.)))
-                        .child(self.t("提醒", "Reminder")),
-                )
+                el.child(metadata_item(
+                    window,
+                    IconName::Bell,
+                    self.t("提醒", "Reminder"),
+                ))
             })
+            .children(self.completion_metadata(task, p, window))
     }
 
     fn can_drop_before(&self, source: &str, target: &str) -> bool {
@@ -1510,7 +1596,7 @@ impl Workspace {
         } else {
             format!("{fold_hint} · 已完成 {completed_children} / {child_count}")
         };
-        let metadata = self.task_metadata(task, p);
+        let metadata = self.task_metadata(task, p, window);
         div()
             .flex()
             .flex_col()
@@ -1611,7 +1697,8 @@ impl Workspace {
                                     .when(
                                         task.issue_key.is_some()
                                             || task.due_date.is_some()
-                                            || task.remind_at.is_some(),
+                                            || task.remind_at.is_some()
+                                            || (task.completed && task.completed_at.is_some()),
                                         |el| el.child(metadata.w_full().gap_x_2().gap_y(px(2.))),
                                     )
                                     .when_some(task.latest_progress_note(), |el, note| {
@@ -2770,6 +2857,17 @@ impl Workspace {
 
     fn agenda(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette(window);
+        let today = model::today();
+        let group =
+            |task: &Task| weekly_group(task, self.week, today, self.grouped_as_completed(task));
+        let order = |a: &Task, b: &Task| {
+            weekly_order(
+                a,
+                self.grouped_as_completed(a),
+                b,
+                self.grouped_as_completed(b),
+            )
+        };
         let mut body = div()
             .id("agenda-scroll")
             .flex_1()
@@ -2779,19 +2877,14 @@ impl Workspace {
             .flex_col()
             .p_5()
             .gap_3();
-        let overdue = self
+        let mut overdue = self
             .doc
             .tasks
             .iter()
-            .filter(|t| {
-                !self.grouped_as_completed(t)
-                    && self.visible(t, cx)
-                    && t.agenda_date().is_some_and(|d| {
-                        d >= self.week && d < self.week + Duration::days(7) && d < model::today()
-                    })
-            })
+            .filter(|t| group(t) == Some(WeeklyGroup::Overdue) && self.visible(t, cx))
             .cloned()
             .collect::<Vec<_>>();
+        overdue.sort_by(order);
         if !overdue.is_empty() {
             body = body.child(
                 div()
@@ -2814,63 +2907,41 @@ impl Workspace {
             .doc
             .tasks
             .iter()
-            .filter(|task| is_unplanned_in_week(task, self.week) && self.visible(task, cx))
+            .filter(|task| group(task) == Some(WeeklyGroup::Unplanned) && self.visible(task, cx))
             .cloned()
             .collect::<Vec<_>>();
-        unplanned.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+        unplanned.sort_by(order);
         if !unplanned.is_empty() {
-            let completed = unplanned
-                .iter()
-                .filter(|task| self.grouped_as_completed(task))
-                .count();
-            body = body.child(
-                div()
-                    .id("agenda-unplanned")
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .gap_2()
-                    .p_4()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(p.border)
-                    .bg(p.subtle)
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .text_color(p.muted)
-                            .child(format!(
-                                "{} · {}",
-                                self.t("未规划", "Unplanned"),
-                                unplanned.len()
-                            )),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .children(
-                                unplanned
-                                    .iter()
-                                    .filter(|task| !self.grouped_as_completed(task))
-                                    .map(|task| self.flat_row(task, window, cx)),
-                            )
-                            .when(completed > 0, |el| {
-                                el.child(self.completed_heading(completed, p))
-                            })
-                            .children(
-                                unplanned
-                                    .iter()
-                                    .filter(|task| self.grouped_as_completed(task))
-                                    .map(|task| self.flat_row(task, window, cx)),
-                            ),
-                    ),
-            );
+            body =
+                body.child(
+                    div()
+                        .id("agenda-unplanned")
+                        .flex()
+                        .flex_col()
+                        .flex_shrink_0()
+                        .gap_2()
+                        .p_4()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(p.border)
+                        .bg(p.subtle)
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .text_color(p.muted)
+                                .child(format!(
+                                    "{} · {}",
+                                    self.t("未规划", "Unplanned"),
+                                    unplanned.len()
+                                )),
+                        )
+                        .child(div().min_w_0().flex().flex_col().gap_2().children(
+                            unplanned.iter().map(|task| self.flat_row(task, window, cx)),
+                        )),
+                );
         }
         for offset in 0..7 {
             let date = self.week + Duration::days(offset);
@@ -2878,15 +2949,10 @@ impl Workspace {
                 .doc
                 .tasks
                 .iter()
-                .filter(|t| {
-                    t.agenda_date() == Some(date)
-                        && !is_unplanned_in_week(t, self.week)
-                        && self.visible(t, cx)
-                        && (self.grouped_as_completed(t) || date >= model::today())
-                })
+                .filter(|t| group(t) == Some(WeeklyGroup::Day(date)) && self.visible(t, cx))
                 .cloned()
                 .collect::<Vec<_>>();
-            tasks.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+            tasks.sort_by(order);
             let completed = tasks
                 .iter()
                 .filter(|task| self.grouped_as_completed(task))
@@ -3027,11 +3093,18 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
-                    .line_height(relative(1.45))
-                    .whitespace_normal()
-                    .text_color(if task.completed { p.muted } else { p.text })
-                    .child(self.tagged_title(task, window, cx)),
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .line_height(relative(1.45))
+                            .whitespace_normal()
+                            .text_color(if task.completed { p.muted } else { p.text })
+                            .child(self.tagged_title(task, window, cx)),
+                    )
+                    .children(self.completion_metadata(task, p, window)),
             )
             .child(
                 div()
@@ -3585,37 +3658,228 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_unplanned_in_week, matches_tag_week, week_completion, week_labels};
+    use super::{
+        WeeklyGroup, matches_tag_week, week_completion, week_labels, weekly_group, weekly_order,
+    };
     use crate::model::{Document, Task};
-    use chrono::{NaiveDate, TimeZone, Utc};
+    use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
 
     #[test]
-    fn unplanned_tasks_use_week_membership_and_due_date_even_when_completed() {
+    fn weekly_order_uses_completion_for_done_and_due_for_open() {
+        let date = |hour| Utc.with_ymd_and_hms(2026, 10, 24, hour, 0, 0).unwrap();
+        let mut tasks = [
+            Task {
+                id: "late".into(),
+                due_date: Some(date(17)),
+                completed_at: Some(date(8)),
+                sort_order: 0.,
+                ..Default::default()
+            },
+            Task {
+                id: "early".into(),
+                due_date: Some(date(9)),
+                completed_at: Some(date(18)),
+                sort_order: 1.,
+                ..Default::default()
+            },
+            Task {
+                id: "middle".into(),
+                due_date: Some(date(12)),
+                completed_at: Some(date(12)),
+                sort_order: 2.,
+                ..Default::default()
+            },
+        ];
+        tasks.sort_by(|a, b| weekly_order(a, false, b, false));
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["early", "middle", "late"]
+        );
+        tasks.sort_by(|a, b| weekly_order(a, true, b, true));
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["late", "middle", "early"]
+        );
+        // A checked row still uses its due time until the confetti settles.
+        tasks[0].completed = true;
+        tasks.sort_by(|a, b| weekly_order(a, false, b, false));
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["early", "middle", "late"]
+        );
+    }
+
+    #[test]
+    fn weekly_order_keeps_manual_ties_and_places_missing_dates_last() {
+        let date = Utc.with_ymd_and_hms(2026, 10, 24, 12, 0, 0).unwrap();
+        let mut tasks = [
+            Task {
+                id: "no-date".into(),
+                sort_order: -10.,
+                ..Default::default()
+            },
+            Task {
+                id: "tie-second".into(),
+                due_date: Some(date),
+                sort_order: 2.,
+                ..Default::default()
+            },
+            Task {
+                id: "tie-first".into(),
+                due_date: Some(date),
+                sort_order: 1.,
+                ..Default::default()
+            },
+        ];
+        tasks.sort_by(|a, b| weekly_order(a, false, b, false));
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tie-first", "tie-second", "no-date"]
+        );
+        // Legacy completed tasks without completed_at use their due date.
+        tasks.sort_by(|a, b| weekly_order(a, true, b, true));
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tie-first", "tie-second", "no-date"]
+        );
+    }
+
+    #[test]
+    fn weekly_completion_moves_unplanned_tasks_to_their_local_completion_day() {
         let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
-        let timestamp = Utc.with_ymd_and_hms(2026, 10, 20, 9, 0, 0).unwrap();
+        let day = week + Duration::days(2);
+        let timestamp = Local
+            .from_local_datetime(&day.and_hms_opt(0, 15, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
         let mut task = Task {
             week_start: week,
             ..Default::default()
         };
-        assert!(is_unplanned_in_week(&task, week));
-        assert!(!is_unplanned_in_week(
-            &task,
-            week - chrono::Duration::weeks(1)
-        ));
-        assert!(!is_unplanned_in_week(
-            &task,
-            week + chrono::Duration::weeks(1)
-        ));
+        assert_eq!(
+            weekly_group(&task, week, day, false),
+            Some(WeeklyGroup::Unplanned)
+        );
+        assert_eq!(
+            weekly_group(&task, week + Duration::weeks(1), day, false),
+            None
+        );
 
-        task.parent_id = Some("parent".into());
-        task.week_start = week + chrono::Duration::days(4);
         task.completed = true;
         task.completed_at = Some(timestamp);
-        assert!(is_unplanned_in_week(&task, week));
-        assert!(task.agenda_date().is_some());
+        assert_eq!(
+            weekly_group(&task, week, day, true),
+            Some(WeeklyGroup::Day(day))
+        );
+        // A completed task from an earlier assigned week still appears on its actual completion day.
+        task.week_start = week - Duration::weeks(1);
+        assert_eq!(
+            weekly_group(&task, week, day, true),
+            Some(WeeklyGroup::Day(day))
+        );
+        assert_eq!(weekly_group(&task, task.week_start, day, true), None);
+        task.parent_id = Some("parent".into());
+        assert_eq!(
+            weekly_group(&task, week, day, true),
+            Some(WeeklyGroup::Day(day))
+        );
+    }
 
-        task.due_date = Some(timestamp);
-        assert!(!is_unplanned_in_week(&task, week));
+    #[test]
+    fn weekly_due_date_takes_priority_across_weeks_and_preserves_overdue_feedback() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let today = week + Duration::days(4);
+        let due = week + Duration::days(1);
+        let timestamp = |day: NaiveDate| {
+            Local
+                .from_local_datetime(&day.and_hms_opt(23, 45, 0).unwrap())
+                .single()
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        let mut task = Task {
+            week_start: week,
+            completed: true,
+            completed_at: Some(timestamp(today)),
+            due_date: Some(timestamp(due)),
+            ..Default::default()
+        };
+        assert_eq!(
+            weekly_group(&task, week, today, true),
+            Some(WeeklyGroup::Day(due))
+        );
+        // During confetti, keep the checked row in the overdue section rather than moving early.
+        assert_eq!(
+            weekly_group(&task, week, today, false),
+            Some(WeeklyGroup::Overdue)
+        );
+        let next_due = due + Duration::weeks(1);
+        task.due_date = Some(timestamp(next_due));
+        assert_eq!(weekly_group(&task, week, today, true), None);
+        assert_eq!(
+            weekly_group(&task, week + Duration::weeks(1), today, true),
+            Some(WeeklyGroup::Day(next_due))
+        );
+        assert_eq!(
+            weekly_group(&task, week + Duration::weeks(1), today, false),
+            Some(WeeklyGroup::Day(next_due))
+        );
+    }
+
+    #[test]
+    fn weekly_unplanned_completion_waits_for_feedback_and_undated_legacy_tasks_stay_visible() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let today = week + Duration::days(4);
+        let mut task = Task {
+            week_start: today,
+            completed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            weekly_group(&task, week, today, false),
+            Some(WeeklyGroup::Unplanned)
+        );
+        // Missing legacy timestamps cannot identify a completion day; fall back to the assigned Monday.
+        assert_eq!(
+            weekly_group(&task, week, today, true),
+            Some(WeeklyGroup::Day(week))
+        );
+        task.completed_at = Some(
+            Local
+                .from_local_datetime(&today.and_hms_opt(12, 0, 0).unwrap())
+                .single()
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+        assert_eq!(
+            weekly_group(&task, week, today, false),
+            Some(WeeklyGroup::Unplanned)
+        );
+        assert_eq!(
+            weekly_group(&task, week, today, true),
+            Some(WeeklyGroup::Day(today))
+        );
+        task.completed = false;
+        assert_eq!(
+            weekly_group(&task, week, today, false),
+            Some(WeeklyGroup::Unplanned)
+        );
     }
 
     #[test]

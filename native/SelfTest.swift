@@ -301,13 +301,21 @@ enum NativeSelfTest {
             """
             try Data(json.utf8).write(to: url)
             let plan = try ReminderPlan.load(url, now: now)
-            try check(plan.map(\.task.id) == ["future"],
+            try check(plan.pending.map(\.task.id) == ["future"],
                       "Schema \(schemaVersion) skips completed, missing and expired reminders")
-            try check(plan[0].date == DateCodec.parse("2030-01-01T00:00:00Z")!,
+            try check(plan.pending[0].date == DateCodec.parse("2030-01-01T00:00:00Z")!,
                       "Schema \(schemaVersion) preserves reminder timestamp")
+            try check(plan.activeIDs == ["task-future", "task-past"],
+                      "Overdue unfinished reminders retain ownership of delivered notifications")
+            let delivered = ["task-future", "task-past", "task-done", "task-none", "task-deleted", "instant-other"]
+            try check(plan.obsoleteDelivered(delivered) == ["task-done", "task-none", "task-deleted"],
+                      "Sync only dismisses completed, cleared or deleted tasks, preserving unrelated notifications")
+            let later = try ReminderPlan.load(url, now: DateCodec.parse("2031-01-01T00:00:00Z")!)
+            try check(later.pending.isEmpty && later.obsoleteDelivered(delivered) == plan.obsoleteDelivered(delivered),
+                      "Repeated sync after delivery does not erase an unfinished reminder")
             for tasks in ["[]", #"[{"id":"none","title":"None","completed":false}]"#] {
                 try Data("{\"schemaVersion\":\(schemaVersion),\"tasks\":\(tasks)}".utf8).write(to: url)
-                try check(try ReminderPlan.load(url, now: now).isEmpty,
+                try check(try ReminderPlan.load(url, now: now).pending.isEmpty,
                           "Schema \(schemaVersion) accepts documents without reminders")
             }
             try Data(json.replacingOccurrences(of: "2030-01-01T00:00:00.000Z", with: "invalid").utf8).write(to: url)
@@ -316,6 +324,32 @@ enum NativeSelfTest {
                 throw HelperError("Self-test failed: schema \(schemaVersion) accepted a malformed reminder timestamp")
             } catch let error as HelperError where error.message == "Task future has an invalid ISO8601 remindAt value." {}
         }
+        let boundaries = """
+        {"schemaVersion":2,"tasks":[
+          {"id":"offset","title":"Offset","completed":false,"remindAt":"2026-10-12T08:00:01+08:00"},
+          {"id":"fraction","title":"Fraction","completed":false,"remindAt":"2026-10-12T00:00:00.500Z"},
+          {"id":"now","title":"Now","completed":false,"remindAt":"2026-10-12T00:00:00Z"}
+        ]}
+        """
+        try Data(boundaries.utf8).write(to: url)
+        let boundaryPlan = try ReminderPlan.load(url, now: now)
+        try check(boundaryPlan.pending.map(\.task.id) == ["fraction", "offset"],
+                  "Fractional seconds and offsets preserve chronological order; exact-now is not scheduled")
+        try check(boundaryPlan.pending[1].date == now.addingTimeInterval(1), "Offset date represents the same UTC instant")
+        for tasks in [#"[{"id":"","title":"Empty","completed":false}]"#,
+                      #"[{"id":"same","title":"One","completed":false},{"id":"same","title":"Two","completed":true}]"#] {
+            try Data("{\"schemaVersion\":2,\"tasks\":\(tasks)}".utf8).write(to: url)
+            do {
+                _ = try ReminderPlan.load(url, now: now)
+                throw HelperError("Self-test failed: duplicate/empty reminder id accepted")
+            } catch let error as HelperError where error.message == "Reminder JSON contains an empty or duplicate task id." {}
+        }
+        try check(HelperCLI.isNotificationBundle(HelperCLI.bundleID)
+                  && HelperCLI.isNotificationBundle(HelperCLI.bundleID + ".test.fixture")
+                  && !HelperCLI.isNotificationBundle(nil)
+                  && !HelperCLI.isNotificationBundle("com.fourquadrants.gpui")
+                  && !HelperCLI.isNotificationBundle(HelperCLI.bundleID + "-other"),
+                  "CLI reexec recognizes only the helper and isolated test identities")
         for schemaVersion in [0, 3] {
             try Data("{\"schemaVersion\":\(schemaVersion),\"tasks\":[]}".utf8).write(to: url)
             do {

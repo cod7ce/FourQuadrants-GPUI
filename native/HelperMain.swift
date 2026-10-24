@@ -93,8 +93,13 @@ enum HelperCLI {
         guard args.count == count else { throw HelperError("Invalid arguments.\n\(help)") }
     }
 
+    static func isNotificationBundle(_ identifier: String?) -> Bool {
+        guard let identifier else { return false }
+        return identifier == bundleID || identifier.hasPrefix(bundleID + ".test.")
+    }
+
     private static func runBundledIfNeeded(_ args: [String]) throws {
-        if Bundle.main.bundleIdentifier == bundleID,
+        if isNotificationBundle(Bundle.main.bundleIdentifier),
            Bundle.main.bundleURL.pathExtension == "app" { return }
         let executable = Bundle.main.executableURL ?? file(CommandLine.arguments[0])
         let bundled = executable.deletingLastPathComponent()

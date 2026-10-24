@@ -605,6 +605,30 @@ fn labeled(label: &str, input: &Entity<InputState>, p: Palette) -> Div {
         .child(text_input(input))
 }
 
+const THEME_PREVIEW_HEIGHT: f32 = 82.;
+
+fn system_theme_preview(dark: Palette, light: Palette) -> Div {
+    div()
+        .flex()
+        .w_full()
+        .h(px(THEME_PREVIEW_HEIGHT))
+        .children([(dark, false), (light, true)].map(|(palette, right)| {
+            div()
+                .relative()
+                .w(relative(0.5))
+                .h_full()
+                .overflow_hidden()
+                .child(
+                    theme_preview(palette)
+                        .absolute()
+                        .top_0()
+                        .w(relative(2.))
+                        .when(right, |el| el.right_0())
+                        .when(!right, |el| el.left_0()),
+                )
+        }))
+}
+
 fn theme_preview(p: Palette) -> Div {
     let mut quadrants = div()
         .grid()
@@ -639,7 +663,7 @@ fn theme_preview(p: Palette) -> Div {
     div()
         .flex()
         .w_full()
-        .h(px(82.))
+        .h(px(THEME_PREVIEW_HEIGHT))
         .rounded(px(4.))
         .border_1()
         .border_color(p.border)
@@ -1236,6 +1260,14 @@ impl Workspace {
                     WindowAppearance::Light
                 },
             );
+            let preview = if value == "system" {
+                system_theme_preview(
+                    Palette::new(&preview_settings, WindowAppearance::Dark),
+                    Palette::new(&preview_settings, WindowAppearance::Light),
+                )
+            } else {
+                theme_preview(preview_palette)
+            };
             themes = themes.child(
                 div()
                     .id(SharedString::from(format!("settings-theme-{value}")))
@@ -1251,7 +1283,7 @@ impl Workspace {
                     .bg(if selected { p.selected } else { p.subtle })
                     .cursor_pointer()
                     .hover(move |el| el.bg(p.hover).border_color(p.accent))
-                    .child(theme_preview(preview_palette))
+                    .child(preview)
                     .child(
                         div()
                             .flex()
@@ -2250,7 +2282,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| this.export_file(false, window, cx))))
                 .child(chip("settings-legacy-import", self.t("导入旧版 .store", "Import legacy .store").to_owned(), p)
                     .on_click(cx.listener(|this, _, window, cx| this.import_file(true, window, cx))))
-                .child(chip("settings-sync-reminders", self.t("同步到系统提醒事项", "Sync to Reminders").to_owned(), p)
+                .child(chip("settings-sync-reminders", self.t("同步系统通知", "Sync notifications").to_owned(), p)
                     .on_click(cx.listener(|this, _, window, cx| this.sync_reminders(window, cx)))))
             .child(div().flex().items_start().gap_2().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(11.)).text_color(p.muted)
                 .child(glyph(IconName::Folder))
