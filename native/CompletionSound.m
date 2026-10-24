@@ -21,6 +21,13 @@ static const NSTimeInterval FQCompletionHealthInterval = 30;
 static const NSTimeInterval FQCompletionStallGrace = 1;
 static const NSTimeInterval FQCompletionPlaybackTimeout = 1.5;
 
+#if defined(__MAC_27_0)
+// Avoid @available's compiler-runtime symbol in Rust's release link.
+static BOOL FQCompletionUsesMacOS27API(void) {
+    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+}
+#endif
+
 static OSStatus FQReadSoundBytes(void *context, SInt64 position, UInt32 count, void *destination, UInt32 *actual) {
     NSData *data = (__bridge NSData *)context;
     *actual = 0;
@@ -100,7 +107,9 @@ static BOOL FQCreateCompletionAudio(void) {
     FQCompletionPlayer.volume = 0.5f;
     [FQCompletionEngine attachNode:FQCompletionPlayer];
 #if defined(__MAC_27_0)
-    if (@available(macOS 27.0, *)) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+    if (FQCompletionUsesMacOS27API()) {
         NSError *error = nil;
         if (![FQCompletionEngine connect:FQCompletionPlayer to:FQCompletionEngine.mainMixerNode
                                   format:FQCompletionBuffer.format error:&error]) {
@@ -109,6 +118,7 @@ static BOOL FQCreateCompletionAudio(void) {
             return NO;
         }
     } else
+#pragma clang diagnostic pop
 #endif
     {
 #pragma clang diagnostic push
@@ -143,7 +153,9 @@ static BOOL FQStartCompletionEngine(void) {
     }
     if (!FQCompletionPlayer.isPlaying) {
 #if defined(__MAC_27_0)
-        if (@available(macOS 27.0, *)) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+        if (FQCompletionUsesMacOS27API()) {
             NSError *error = nil;
             if (![FQCompletionPlayer playAndReturnError:&error]) {
                 NSLog(@"Unable to start task completion player: %@", error.localizedDescription);
@@ -151,6 +163,7 @@ static BOOL FQStartCompletionEngine(void) {
                 return NO;
             }
         } else
+#pragma clang diagnostic pop
 #endif
         {
 #pragma clang diagnostic push
