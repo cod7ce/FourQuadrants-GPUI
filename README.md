@@ -4,7 +4,7 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/cod7ce/FourQuadrants-GPUI/releases/latest) 下载 `FourQuadrants-GPUI-0.20.0-arm64.zip`，解压后将应用移入“应用程序”。当前发布包支持 Apple Silicon、macOS 14 及以上。包使用 ad-hoc 代码签名，尚未经过 Apple 公证；macOS 可能阻止首次打开，可在核对来源后通过“系统设置 → 隐私与安全性”允许打开。
+从 [GitHub Releases](https://github.com/cod7ce/FourQuadrants-GPUI/releases/latest) 下载 `FourQuadrants-GPUI-0.20.1-arm64.zip`，解压后将应用移入“应用程序”。当前发布包支持 Apple Silicon、macOS 14 及以上。包使用 ad-hoc 代码签名，尚未经过 Apple 公证；macOS 可能阻止首次打开，可在核对来源后通过“系统设置 → 隐私与安全性”允许打开。
 
 ## 启动
 
@@ -138,7 +138,7 @@ Rust 测试覆盖模型、树操作、结转、合并幂等、笔记冲突、原
 
 ## 版本与更新
 
-当前版本为 **0.20.0**，以 `Cargo.toml` 为准，应用包的两个版本字段必须同步。设置 → **版本** 显示当前版本，提供手动检查更新与发布记录入口。完整应用包内嵌固定版本的 **Sparkle 2.10.0**，更新源独立于旧 SwiftUI 应用；自动检查、后台下载与系统配置统计默认关闭。`cargo run` 不加载 Sparkle，`--data` 模式在加载框架前禁用全部更新操作。
+当前版本为 **0.20.1**，以 `Cargo.toml` 为准，应用包的两个版本字段必须同步。设置 → **版本** 显示当前版本，提供手动检查更新与发布记录入口。完整应用包内嵌固定版本的 **Sparkle 2.10.0**，更新源独立于旧 SwiftUI 应用；自动检查、后台下载与系统配置统计默认关闭。`cargo run` 不加载 Sparkle，`--data` 模式在加载框架前禁用全部更新操作。
 
 安装前以及系统最终退出时，均使用现有退出检查保存任务与笔记，写入或校验失败时保留草稿并暂停更新；富文本窗口必须先保存并关闭。更新包使用 Ed25519 签名，打包脚本会核对应用内公钥；缺少公钥时拒绝生成发布包。签名私钥只保存在本机钥匙串或发布环境的秘密变量中，不进入仓库。构建与本地签名步骤见 [发布说明](docs/RELEASING.md)。
 
