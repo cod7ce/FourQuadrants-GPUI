@@ -745,6 +745,30 @@ impl Document {
         id
     }
 
+    /// Adds a child with a one-time copy of its parent's tags and quadrant.
+    /// The child starts in the parent's week and is appended after its siblings.
+    /// Validate before inserting so a failed creation never leaves an orphan task.
+    pub fn add_subtask(&mut self, title: &str, parent: &str) -> Result<String> {
+        ensure!(
+            self.depth_of(parent)? < MAX_TASK_DEPTH,
+            "adding a subtask would exceed the maximum task depth of {MAX_TASK_DEPTH}"
+        );
+        let parent = self.task(parent).expect("parent was checked by depth_of");
+        let task = Task {
+            title: title.to_string(),
+            urgent: parent.urgent,
+            important: parent.important,
+            week_start: parent.week_start,
+            parent_id: Some(parent.id.clone()),
+            tags: parent.tags.clone(),
+            sort_order: self.next_sort_order(Some(&parent.id)),
+            ..Task::default()
+        };
+        let id = task.id.clone();
+        self.tasks.push(task);
+        Ok(id)
+    }
+
     /// Toggles exactly one task. The original does not recursively toggle the
     /// subtree, so children keep their own completion state.
     pub fn toggle_complete(&mut self, id: &str) {
@@ -786,7 +810,8 @@ impl Document {
     }
 
     /// Attaches a task below `parent` (or detaches it when `None`). The whole
-    /// subtree follows the new parent's week. Cycles and depth > 3 are errors.
+    /// subtree follows the new parent's week, keeping its own tags and quadrants.
+    /// Cycles and depth > 3 are errors.
     pub fn reparent(&mut self, id: &str, parent: Option<&str>) -> Result<()> {
         let target_idx = self
             .index_of(id)
@@ -2201,6 +2226,139 @@ mod tests {
         assert_eq!(q0_tasks.len(), 2);
         assert_eq!(doc.task(&extra).unwrap().sort_order, 1.0);
         assert_eq!(doc.task(&id0).unwrap().title, "q0");
+    }
+
+    #[test]
+    fn add_subtask_copies_parent_defaults_and_appends_to_siblings() {
+        for quadrant in 0..4 {
+            let mut doc = Document {
+                tags: vec![Tag::default(), Tag::default()],
+                ..Document::default()
+            };
+            let parent = doc.add_task("parent", date(2026, 7, 13), quadrant);
+            let tags: Vec<String> = if quadrant % 2 == 0 {
+                doc.tags.iter().map(|tag| tag.id.clone()).collect()
+            } else {
+                Vec::new()
+            };
+            let source = doc.task_mut(&parent).unwrap();
+            source.tags = tags.clone();
+            source.notes = "parent notes".into();
+            source.rich_content = Some("parent rich text".into());
+            source.links.push("https://example.com/parent".into());
+            source.issue_key = Some("PARENT-1".into());
+            source.progress_notes.push(ProgressNote::default());
+            source.due_date = Some(local_midnight_utc(date(2026, 7, 15)));
+            source.remind_at = source.due_date;
+            doc.toggle_complete(&parent);
+
+            let first = doc.add_subtask("first", &parent).unwrap();
+            doc.task_mut(&first).unwrap().sort_order = 7.0;
+            let child = doc.add_subtask("child", &parent).unwrap();
+            let task = doc.task(&child).unwrap();
+            assert_ne!(task.id, parent);
+            assert_ne!(task.id, first);
+            assert_eq!(task.title, "child");
+            assert_eq!(task.parent_id.as_deref(), Some(parent.as_str()));
+            assert_eq!(task.week_start, date(2026, 7, 13));
+            assert_eq!(task.quadrant(), quadrant);
+            assert_eq!(task.tags, tags);
+            assert_eq!(task.sort_order, 8.0);
+            assert_eq!(doc.children(&parent)[1].id, child);
+            assert!(!task.completed);
+            assert!(task.completed_at.is_none());
+            assert!(task.due_date.is_none());
+            assert!(task.remind_at.is_none());
+            assert!(task.notes.is_empty());
+            assert!(task.rich_content.is_none());
+            assert!(task.links.is_empty());
+            assert!(task.issue_key.is_none());
+            assert!(task.progress_notes.is_empty());
+            doc.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn subtask_tags_and_quadrant_are_independent_after_creation() {
+        let mut doc = Document {
+            tags: vec![Tag::default(), Tag::default()],
+            ..Document::default()
+        };
+        let tags: Vec<String> = doc.tags.iter().map(|tag| tag.id.clone()).collect();
+        let week = date(2026, 7, 6);
+        let parent = doc.add_task("parent", week, 1);
+        doc.task_mut(&parent).unwrap().tags = tags.clone();
+        let child = doc.add_subtask("child", &parent).unwrap();
+        let grandchild = doc.add_subtask("grandchild", &child).unwrap();
+
+        doc.task_mut(&parent).unwrap().tags.clear();
+        doc.move_task(&parent, week, 2);
+        for id in [&child, &grandchild] {
+            assert_eq!(doc.task(id).unwrap().tags, tags);
+            assert_eq!(doc.task(id).unwrap().quadrant(), 1);
+        }
+
+        doc.task_mut(&child).unwrap().tags.remove(0);
+        doc.move_task(&child, week, 3);
+        assert!(doc.task(&parent).unwrap().tags.is_empty());
+        assert_eq!(doc.task(&parent).unwrap().quadrant(), 2);
+        assert_eq!(doc.task(&grandchild).unwrap().tags, tags);
+        assert_eq!(doc.task(&grandchild).unwrap().quadrant(), 1);
+
+        // Later children copy their immediate parent's latest values.
+        let later_grandchild = doc.add_subtask("later grandchild", &child).unwrap();
+        assert_eq!(
+            doc.task(&later_grandchild).unwrap().tags,
+            vec![tags[1].clone()]
+        );
+        assert_eq!(doc.task(&later_grandchild).unwrap().quadrant(), 3);
+        let later_child = doc.add_subtask("later child", &parent).unwrap();
+        assert!(doc.task(&later_child).unwrap().tags.is_empty());
+        assert_eq!(doc.task(&later_child).unwrap().quadrant(), 2);
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn add_subtask_rejects_missing_parent_and_excess_depth_without_mutation() {
+        let (mut doc, parent) = doc_with_task("parent");
+        let child = doc.add_subtask("child", &parent).unwrap();
+        let grandchild = doc.add_subtask("grandchild", &child).unwrap();
+        let before = doc.clone();
+
+        assert!(doc.add_subtask("missing parent", "missing").is_err());
+        assert_eq!(doc, before);
+        assert!(doc.add_subtask("too deep", &grandchild).is_err());
+        assert_eq!(doc, before);
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn reparent_keeps_existing_tags_and_quadrants() {
+        let mut doc = Document {
+            tags: vec![Tag::default(), Tag::default()],
+            ..Document::default()
+        };
+        let parent = doc.add_task("parent", date(2026, 7, 13), 0);
+        doc.task_mut(&parent).unwrap().tags = vec![doc.tags[0].id.clone()];
+        let task = doc.add_task("existing task", date(2026, 7, 6), 2);
+        let own_tags = vec![doc.tags[1].id.clone()];
+        doc.task_mut(&task).unwrap().tags = own_tags.clone();
+        let child = doc.add_subtask("child", &task).unwrap();
+        doc.move_task(&child, date(2026, 7, 6), 3);
+        doc.task_mut(&child).unwrap().tags.clear();
+
+        for new_parent in [Some(parent.as_str()), None] {
+            doc.reparent(&task, new_parent).unwrap();
+            assert_eq!(doc.task(&task).unwrap().parent_id.as_deref(), new_parent);
+            assert_eq!(doc.task(&task).unwrap().tags, own_tags);
+            assert_eq!(doc.task(&task).unwrap().quadrant(), 2);
+            assert!(doc.task(&child).unwrap().tags.is_empty());
+            assert_eq!(doc.task(&child).unwrap().quadrant(), 3);
+            for id in [&task, &child] {
+                assert_eq!(doc.task(id).unwrap().week_start, date(2026, 7, 13));
+            }
+        }
+        doc.validate().unwrap();
     }
 
     #[test]

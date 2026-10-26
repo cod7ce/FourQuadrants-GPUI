@@ -9,6 +9,7 @@ mod task_dialog;
 mod task_focus;
 mod task_schedule;
 mod updates;
+mod weekly_pins;
 
 use crate::{
     model::{self, Document, Task},
@@ -980,14 +981,16 @@ impl Workspace {
         };
         let mut id = String::new();
         self.change(cx, |doc| {
-            id = doc.add_task(&title, week, q);
-            if let Some(tag) = tag {
-                doc.task_mut(&id).unwrap().tags.push(tag);
-            }
             if let Some(parent) = parent {
-                doc.reparent(&id, Some(&parent))?;
-            } else if let Some(day) = schedule {
-                doc.schedule(&id, day);
+                id = doc.add_subtask(&title, &parent)?;
+            } else {
+                id = doc.add_task(&title, week, q);
+                if let Some(tag) = tag {
+                    doc.task_mut(&id).unwrap().tags.push(tag);
+                }
+                if let Some(day) = schedule {
+                    doc.schedule(&id, day);
+                }
             }
             Ok(())
         });
@@ -2966,7 +2969,7 @@ impl Workspace {
                             )
                             .child("Pin"),
                     )
-                    .child(self.weekly_rows(&pinned, window, cx)),
+                    .child(self.weekly_pinned_rows(&pinned, window, cx)),
             );
         }
         let mut overdue = self
