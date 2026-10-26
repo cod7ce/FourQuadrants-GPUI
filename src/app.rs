@@ -265,6 +265,16 @@ impl IconNamed for SidebarToggle {
     }
 }
 
+/// Pushpin marking the weekly pinned task box.
+#[derive(Clone, Copy)]
+struct PinIcon;
+
+impl IconNamed for PinIcon {
+    fn path(self) -> SharedString {
+        "icons/pin.svg".into()
+    }
+}
+
 /// Icons ported from the original FourQuadrants SwiftUI paths.
 #[derive(Clone, Copy)]
 enum AppIcon {
@@ -526,22 +536,28 @@ fn weekly_group(
     let date = task
         .due_date
         .or(if completed { task.completed_at } else { None });
-    let date = match date {
-        Some(date) => date.with_timezone(&chrono::Local).date_naive(),
-        None if !completed => {
-            return (model::week_start(task.week_start) == week).then_some(WeeklyGroup::Unplanned);
+    let group = if let Some(date) = date {
+        let date = date.with_timezone(&chrono::Local).date_naive();
+        if date < week || date >= week + Duration::days(7) {
+            return None;
+        }
+        if !completed && date < today {
+            WeeklyGroup::Overdue
+        } else {
+            WeeklyGroup::Day(date)
+        }
+    } else {
+        if model::week_start(task.week_start) != week {
+            return None;
         }
         // Legacy completed tasks can lack both timestamps; keep them visible in their assigned week.
-        None => model::week_start(task.week_start),
+        if completed {
+            WeeklyGroup::Day(week)
+        } else {
+            WeeklyGroup::Unplanned
+        }
     };
-    if date < week || date >= week + Duration::days(7) {
-        return None;
-    }
-    Some(if !completed && date < today {
-        WeeklyGroup::Overdue
-    } else {
-        WeeklyGroup::Day(date)
-    })
+    Some(group)
 }
 
 fn weekly_order_date(task: &Task, completed: bool) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -755,9 +771,9 @@ impl Workspace {
                             new.remind_at.is_some() && self.doc.task(&new.id) != Some(new)
                         });
                 let previous_settings = self.doc.settings.clone();
+                self.task_focus.reconcile(&self.doc, &next);
                 self.doc = next;
                 self.sync_completion_preferences(&previous_settings);
-                self.task_focus.retain_existing(&self.doc);
                 self.error = None;
                 self.status = self.t("已保存", "Saved").into();
                 if reminders_changed {
@@ -1002,9 +1018,9 @@ impl Workspace {
                     self.redo.push(self.doc.clone());
                 }
                 let previous_settings = self.doc.settings.clone();
+                self.task_focus.reconcile(&self.doc, &target);
                 self.doc = target;
                 self.sync_completion_preferences(&previous_settings);
-                self.task_focus.retain_existing(&self.doc);
                 self.reconcile_reminders(cx);
                 self.dismiss_task_dialog(window, cx);
                 self.focus.focus(window);
@@ -2855,6 +2871,34 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn weekly_rows(&self, tasks: &[Task], window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let p = self.palette(window);
+        let completed = tasks
+            .iter()
+            .filter(|task| self.grouped_as_completed(task))
+            .count();
+        div()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(
+                tasks
+                    .iter()
+                    .filter(|task| !self.grouped_as_completed(task))
+                    .map(|task| self.flat_row(task, window, cx)),
+            )
+            .when(completed > 0, |el| {
+                el.child(self.completed_heading(completed, p))
+            })
+            .children(
+                tasks
+                    .iter()
+                    .filter(|task| self.grouped_as_completed(task))
+                    .map(|task| self.flat_row(task, window, cx)),
+            )
+    }
+
     fn agenda(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette(window);
         let today = model::today();
@@ -2877,6 +2921,54 @@ impl Workspace {
             .flex_col()
             .p_5()
             .gap_3();
+        let mut pinned = self
+            .doc
+            .tasks
+            .iter()
+            .filter(|task| {
+                group(task).is_some()
+                    && (self.task_focus.contains(&task.id) || self.confetti.holds_pin(task))
+                    && self.visible(task, cx)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        pinned.sort_by(order);
+        if !pinned.is_empty() {
+            body = body.child(
+                div()
+                    .id("agenda-pinned")
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .p_4()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.subtle)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .line_height(relative(1.))
+                            .text_color(p.muted)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .relative()
+                                    .top(px(-self.doc.settings.font_size * 0.08))
+                                    .child(
+                                        Icon::new(PinIcon)
+                                            .with_size(px(self.doc.settings.font_size)),
+                                    ),
+                            )
+                            .child("Pin"),
+                    )
+                    .child(self.weekly_rows(&pinned, window, cx)),
+            );
+        }
         let mut overdue = self
             .doc
             .tasks
@@ -2953,11 +3045,7 @@ impl Workspace {
                 .cloned()
                 .collect::<Vec<_>>();
             tasks.sort_by(order);
-            let completed = tasks
-                .iter()
-                .filter(|task| self.grouped_as_completed(task))
-                .count();
-            // Descendants have their own scheduled day; do not render them twice in this view.
+            // List descendants independently under their own scheduled day.
             body = body.child(
                 div()
                     .id(("day", offset as usize))
@@ -3004,11 +3092,7 @@ impl Workspace {
                             .child(self.weekday(date)),
                     )
                     .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
+                        self.weekly_rows(&tasks, window, cx)
                             .when(tasks.is_empty(), |el| {
                                 el.child(
                                     div().py_2().text_sm().text_color(p.muted).child(
@@ -3019,22 +3103,7 @@ impl Workspace {
                                         .to_string(),
                                     ),
                                 )
-                            })
-                            .children(
-                                tasks
-                                    .iter()
-                                    .filter(|task| !self.grouped_as_completed(task))
-                                    .map(|task| self.flat_row(task, window, cx)),
-                            )
-                            .when(completed > 0, |el| {
-                                el.child(self.completed_heading(completed, p))
-                            })
-                            .children(
-                                tasks
-                                    .iter()
-                                    .filter(|task| self.grouped_as_completed(task))
-                                    .map(|task| self.flat_row(task, window, cx)),
-                            ),
+                            }),
                     ),
             );
         }
@@ -3663,6 +3732,77 @@ mod tests {
     };
     use crate::model::{Document, Task};
     use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
+
+    #[test]
+    fn weekly_groups_keep_tasks_in_their_date_or_unplanned_box() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let today = week + Duration::days(4);
+        let stamp = |day: NaiveDate| {
+            Local
+                .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
+                .single()
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        let overdue = today - Duration::days(1);
+        for (due, completed, completion, expected) in [
+            (None, false, None, WeeklyGroup::Unplanned),
+            (Some(overdue), false, None, WeeklyGroup::Overdue),
+            (Some(today), false, None, WeeklyGroup::Day(today)),
+            (Some(overdue), true, Some(today), WeeklyGroup::Day(overdue)),
+            (None, true, Some(today), WeeklyGroup::Day(today)),
+            (None, true, None, WeeklyGroup::Day(week)),
+        ] {
+            let task = Task {
+                id: "pin".into(),
+                parent_id: Some("parent".into()),
+                week_start: week,
+                due_date: due.map(stamp),
+                completed,
+                completed_at: completion.map(stamp),
+                ..Default::default()
+            };
+            assert_eq!(weekly_group(&task, week, today, completed), Some(expected));
+        }
+    }
+
+    #[test]
+    fn weekly_groups_respect_date_week_and_completion_feedback() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let next_week = week + Duration::weeks(1);
+        let timestamp = Local
+            .from_local_datetime(&next_week.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut task = Task {
+            week_start: week,
+            completed: true,
+            completed_at: Some(timestamp),
+            ..Default::default()
+        };
+        // Completion in another week moves only after feedback settles.
+        assert_eq!(
+            weekly_group(&task, week, week, false),
+            Some(WeeklyGroup::Unplanned)
+        );
+        assert_eq!(weekly_group(&task, week, week, true), None);
+        assert_eq!(
+            weekly_group(&task, next_week, week, true),
+            Some(WeeklyGroup::Day(next_week))
+        );
+        task.due_date = Some(timestamp);
+        assert_eq!(weekly_group(&task, week, week, false), None);
+        assert_eq!(
+            weekly_group(&task, next_week, week, false),
+            Some(WeeklyGroup::Day(next_week))
+        );
+        task.due_date = None;
+        task.completed_at = None;
+        for completed in [false, true] {
+            assert_eq!(weekly_group(&task, next_week, week, completed), None);
+        }
+    }
 
     #[test]
     fn weekly_order_uses_completion_for_done_and_due_for_open() {

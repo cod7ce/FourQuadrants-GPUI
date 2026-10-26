@@ -151,6 +151,11 @@ impl AssetSource for Assets {
                 "../assets/icons/notes.svg"
             ))));
         }
+        if path == "icons/pin.svg" {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icons/pin.svg"
+            ))));
+        }
         ComponentAssets.load(path)
     }
 
@@ -166,6 +171,7 @@ impl AssetSource for Assets {
             "icons/share.svg",
             "icons/notes.svg",
             "icons/trash.svg",
+            "icons/pin.svg",
         ] {
             if asset.starts_with(path) {
                 paths.push(asset.into());

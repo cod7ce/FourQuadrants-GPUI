@@ -9,7 +9,12 @@ const PARTICLE_COUNT: usize = 20;
 pub(super) struct Confetti {
     generation: u64,
     burst: Option<Burst>,
-    settling: HashMap<String, u64>,
+    settling: HashMap<String, Settling>,
+}
+
+struct Settling {
+    generation: u64,
+    pinned: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -25,9 +30,17 @@ impl Confetti {
         self.generation
     }
 
+    fn settle(&mut self, id: String, generation: u64, pinned: bool) {
+        self.settling.insert(id, Settling { generation, pinned });
+    }
+
     fn clear(&mut self, id: &str, generation: u64) -> bool {
         let mut changed = false;
-        if self.settling.get(id) == Some(&generation) {
+        if self
+            .settling
+            .get(id)
+            .is_some_and(|pending| pending.generation == generation)
+        {
             self.settling.remove(id);
             changed = true;
         }
@@ -41,10 +54,18 @@ impl Confetti {
         task.completed && !self.settling.contains_key(&task.id)
     }
 
+    pub(super) fn holds_pin(&self, task: &Task) -> bool {
+        task.completed
+            && self
+                .settling
+                .get(&task.id)
+                .is_some_and(|pending| pending.pinned)
+    }
+
     fn retain_completed(&mut self, doc: &Document) {
         let generation = self.generation;
         let cancelled_current = self.settling.iter().any(|(id, pending)| {
-            *pending == generation && !doc.task(id).is_some_and(|task| task.completed)
+            pending.generation == generation && !doc.task(id).is_some_and(|task| task.completed)
         });
         self.settling
             .retain(|id, _| doc.task(id).is_some_and(|task| task.completed));
@@ -189,6 +210,7 @@ impl Workspace {
             return;
         };
         let was_completed = task.completed;
+        let was_pinned = self.task_focus.contains(id);
         let origin = match event {
             ClickEvent::Mouse(event) => event.up.position,
             ClickEvent::Keyboard(event) => event.bounds.center(),
@@ -210,7 +232,7 @@ impl Workspace {
         let generation = self.confetti.start(window.window_handle(), origin);
         let id = id.to_owned();
         // Save immediately, but keep each checked row in place until its feedback ends.
-        self.confetti.settling.insert(id.clone(), generation);
+        self.confetti.settle(id.clone(), generation, was_pinned);
         cx.spawn(async move |this, cx| {
             // Regroup the row when the one-second burst has finished.
             cx.background_executor().timer(DURATION).await;
@@ -243,15 +265,20 @@ mod tests {
             ..Task::default()
         };
         let mut confetti = Confetti::default();
-        confetti.settling.insert(first.id.clone(), 1);
-        confetti.settling.insert(second.id.clone(), 2);
+        confetti.settle(first.id.clone(), 1, true);
+        confetti.settle(second.id.clone(), 2, true);
+        assert!(confetti.holds_pin(&first));
+        assert!(confetti.holds_pin(&second));
         assert!(!confetti.grouped_as_completed(&first));
         assert!(!confetti.grouped_as_completed(&second));
         assert!(first.completed && second.completed);
         assert!(confetti.clear(&first.id, 1));
+        assert!(!confetti.holds_pin(&first));
         assert!(confetti.grouped_as_completed(&first));
+        assert!(confetti.holds_pin(&second));
         assert!(!confetti.grouped_as_completed(&second));
         assert!(confetti.clear(&second.id, 2));
+        assert!(!confetti.holds_pin(&second));
         assert!(confetti.grouped_as_completed(&second));
     }
 
@@ -264,12 +291,14 @@ mod tests {
             ..Task::default()
         });
         let mut confetti = Confetti::default();
-        confetti.settling.insert("task".into(), 1);
+        confetti.settle("task".into(), 1, true);
         doc.tasks[0].completed = false;
+        assert!(!confetti.holds_pin(&doc.tasks[0]));
         confetti.retain_completed(&doc);
         assert!(confetti.settling.is_empty());
         doc.tasks[0].completed = true;
-        confetti.settling.insert("task".into(), 2);
+        confetti.settle("task".into(), 2, false);
+        assert!(!confetti.holds_pin(&doc.tasks[0]));
         assert!(!confetti.clear("task", 1));
         assert!(!confetti.grouped_as_completed(&doc.tasks[0]));
         doc.tasks.clear();

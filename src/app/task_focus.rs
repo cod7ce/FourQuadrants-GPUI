@@ -6,7 +6,7 @@ pub(super) struct TaskFocus {
 }
 
 impl TaskFocus {
-    // Opening a task preserves marks; only Shift-click toggles one task.
+    // Opening a task preserves marks; Shift-click toggles one task.
     pub(super) fn click(&mut self, id: &str, shift: bool, count: usize) -> bool {
         if count >= 2 {
             return count == 2;
@@ -17,8 +17,16 @@ impl TaskFocus {
         false
     }
 
-    pub(super) fn retain_existing(&mut self, doc: &Document) {
-        self.ids.retain(|id| doc.task(id).is_some());
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    pub(super) fn reconcile(&mut self, previous: &Document, current: &Document) {
+        self.ids.retain(|id| {
+            current.task(id).is_some_and(|task| {
+                !(task.completed && previous.task(id).is_some_and(|old| !old.completed))
+            })
+        });
     }
 
     pub(super) fn style(&self, row: Stateful<Div>, id: &str, p: Palette) -> Stateful<Div> {
@@ -79,6 +87,49 @@ mod tests {
     }
 
     #[test]
+    fn completion_clears_only_the_newly_completed_pin_and_reopen_does_not_restore_it() {
+        let previous = Document {
+            tasks: vec![
+                Task {
+                    id: "finishing".into(),
+                    ..Default::default()
+                },
+                Task {
+                    id: "other".into(),
+                    ..Default::default()
+                },
+                Task {
+                    id: "already-done".into(),
+                    completed: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut focus = TaskFocus::default();
+        for task in &previous.tasks {
+            focus.click(&task.id, true, 1);
+        }
+        // Keeping the old document (including a failed save) preserves all marks.
+        focus.reconcile(&previous, &previous);
+        assert!(focus.contains("finishing"));
+        let mut completed = previous.clone();
+        completed.toggle_complete("finishing");
+        focus.reconcile(&previous, &completed);
+        assert!(!focus.contains("finishing"));
+        assert!(focus.contains("other"));
+        assert!(focus.contains("already-done"));
+        let mut reopened = completed.clone();
+        reopened.toggle_complete("finishing");
+        focus.reconcile(&completed, &reopened);
+        assert!(!focus.contains("finishing"));
+        // A fresh pin on the reopened task is cleared by a later completion/redo.
+        focus.click("finishing", true, 1);
+        focus.reconcile(&reopened, &completed);
+        assert!(!focus.contains("finishing"));
+    }
+
+    #[test]
     fn deleted_subtree_is_pruned_without_clearing_other_tasks() {
         let mut doc = Document {
             tasks: vec![
@@ -102,8 +153,9 @@ mod tests {
         for id in ["parent", "child", "other"] {
             focus.click(id, true, 1);
         }
+        let previous = doc.clone();
         doc.delete_task("parent");
-        focus.retain_existing(&doc);
+        focus.reconcile(&previous, &doc);
         assert_eq!(focus.ids, HashSet::from(["other".into()]));
     }
 }
