@@ -534,9 +534,13 @@ fn weekly_group(
 ) -> Option<WeeklyGroup> {
     // Use the displayed completion state so a newly checked row stays put during confetti.
     let week = model::week_start(week);
-    let date = task
-        .due_date
-        .or(if completed { task.completed_at } else { None });
+    // Completed tasks belong to their completion day, falling back to the due date
+    // for legacy tasks; open tasks follow their due date.
+    let date = if completed {
+        task.completed_at.or(task.due_date)
+    } else {
+        task.due_date
+    };
     let group = if let Some(date) = date {
         let date = date.with_timezone(&chrono::Local).date_naive();
         if date < week || date >= week + Duration::days(7) {
@@ -2603,9 +2607,10 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_3()
-            .p_4();
+            .p_4()
+            .overflow_y_scroll();
         if stacked {
-            board = board.overflow_y_scroll().children(
+            board = board.children(
                 [0, 2, 1, 3]
                     .into_iter()
                     .map(|q| self.quadrant(q, true, window, cx)),
@@ -2613,7 +2618,7 @@ impl Workspace {
         } else {
             for pair in [[0, 1], [2, 3]] {
                 board = board.child(
-                    div().flex().flex_1().min_h_0().gap_3().children(
+                    div().flex().flex_shrink_0().gap_3().children(
                         pair.into_iter()
                             .map(|q| self.quadrant(q, false, window, cx)),
                     ),
@@ -2667,8 +2672,8 @@ impl Workspace {
             .count();
         div()
             .id(("quadrant", q))
-            .when(stacked, |el| el.w_full().min_h(px(200.)).flex_shrink_0())
-            .when(!stacked, |el| el.flex_1().min_h_0())
+            .when(stacked, |el| el.w_full().flex_shrink_0())
+            .when(!stacked, |el| el.flex_1())
             .min_w_0()
             .flex()
             .flex_col()
@@ -2741,9 +2746,7 @@ impl Workspace {
             )
             .child(
                 div()
-                    .id(("scroll", q))
-                    .when(stacked, |el| el.flex_shrink_0())
-                    .when(!stacked, |el| el.flex_1().min_h_0().overflow_y_scroll())
+                    .flex_shrink_0()
                     .min_w_0()
                     .p_2()
                     .flex()
@@ -2752,7 +2755,7 @@ impl Workspace {
                     .when(tasks.is_empty(), |el| {
                         el.child(
                             div()
-                                .py_8()
+                                .py_5()
                                 .text_center()
                                 .text_sm()
                                 .text_color(p.muted)
@@ -3752,7 +3755,7 @@ mod tests {
             (None, false, None, WeeklyGroup::Unplanned),
             (Some(overdue), false, None, WeeklyGroup::Overdue),
             (Some(today), false, None, WeeklyGroup::Day(today)),
-            (Some(overdue), true, Some(today), WeeklyGroup::Day(overdue)),
+            (Some(overdue), true, Some(today), WeeklyGroup::Day(today)),
             (None, true, Some(today), WeeklyGroup::Day(today)),
             (None, true, None, WeeklyGroup::Day(week)),
         ] {
@@ -3945,7 +3948,7 @@ mod tests {
     }
 
     #[test]
-    fn weekly_due_date_takes_priority_across_weeks_and_preserves_overdue_feedback() {
+    fn weekly_completion_date_takes_priority_across_weeks_and_preserves_overdue_feedback() {
         let week = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
         let today = week + Duration::days(4);
         let due = week + Duration::days(1);
@@ -3963,17 +3966,29 @@ mod tests {
             due_date: Some(timestamp(due)),
             ..Default::default()
         };
+        // The completion day wins over the earlier due day.
         assert_eq!(
             weekly_group(&task, week, today, true),
-            Some(WeeklyGroup::Day(due))
+            Some(WeeklyGroup::Day(today))
         );
         // During confetti, keep the checked row in the overdue section rather than moving early.
         assert_eq!(
             weekly_group(&task, week, today, false),
             Some(WeeklyGroup::Overdue)
         );
+        // A due date in another week does not move a completed task away from its completion week.
         let next_due = due + Duration::weeks(1);
         task.due_date = Some(timestamp(next_due));
+        assert_eq!(
+            weekly_group(&task, week, today, true),
+            Some(WeeklyGroup::Day(today))
+        );
+        assert_eq!(
+            weekly_group(&task, week + Duration::weeks(1), today, true),
+            None
+        );
+        // Legacy completed tasks without a completion timestamp still follow the due date.
+        task.completed_at = None;
         assert_eq!(weekly_group(&task, week, today, true), None);
         assert_eq!(
             weekly_group(&task, week + Duration::weeks(1), today, true),
@@ -3981,6 +3996,14 @@ mod tests {
         );
         assert_eq!(
             weekly_group(&task, week + Duration::weeks(1), today, false),
+            Some(WeeklyGroup::Day(next_due))
+        );
+        // Completion in another week moves the task there even when the due date is this week.
+        task.completed_at = Some(timestamp(next_due));
+        task.due_date = Some(timestamp(due));
+        assert_eq!(weekly_group(&task, week, today, true), None);
+        assert_eq!(
+            weekly_group(&task, week + Duration::weeks(1), today, true),
             Some(WeeklyGroup::Day(next_due))
         );
     }
