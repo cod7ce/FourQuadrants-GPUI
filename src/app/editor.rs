@@ -576,7 +576,7 @@ impl Workspace {
                 div()
                     .p(px(10.))
                     .rounded(px(6.))
-                    .bg(p.subtle)
+                    .bg(p.surface)
                     .border_1()
                     .border_color(p.border)
                     .flex()
@@ -681,7 +681,7 @@ impl Workspace {
                             .text_xs()
                             .text_color(p.muted)
                             .cursor_pointer()
-                            .map(|row| self.task_focus.style(row, &parent_id, p))
+                            .map(|row| task_focus::style(row, &parent_id, &self.doc, p))
                             .tooltip(move |window, cx| {
                                 Tooltip::new(parent_title.clone()).build(window, cx)
                             })
@@ -1116,7 +1116,7 @@ impl Workspace {
                     .py(px(2.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .map(|row| self.task_focus.style(row, &id, p))
+                    .map(|row| task_focus::style(row, &id, &self.doc, p))
                     .on_click(cx.listener(move |this, event, window, cx| {
                         this.activate_task(&id, event, window, cx)
                     }))

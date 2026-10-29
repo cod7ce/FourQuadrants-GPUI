@@ -1,6 +1,6 @@
 [package]
 name = "four-quadrants"
-version = "0.20.5"
+version = "0.20.6"
 edition = "2024"
 description = "A native macOS Eisenhower matrix, built with GPUI"
 license = "MIT"

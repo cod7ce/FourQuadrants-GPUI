@@ -2125,7 +2125,7 @@ impl Workspace {
                 .to_owned()
         };
         section(self.t("粘贴解析规则", "Paste parsing rules"), self.t("按顺序使用首个有结果的规则，否则使用内置解析。捕获组从 1 开始，0 表示忽略。预览由 Foundation 执行，无法编译的规则会被跳过。", "The first rule with a result wins; otherwise built-in parsing applies. Groups start at 1; 0 skips a field. Preview runs in Foundation; rules it cannot compile are skipped."), p)
-            .child(div().flex().flex_col().gap_3().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle)
+            .child(div().flex().flex_col().gap_3().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.surface)
                 .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(self.t("默认匹配规则", "Default matching rule")))
                 .child(div().text_xs().text_color(p.muted).child(self.t("未命中自定义规则时使用，自动识别标题、工单和链接。选择“无标签”则不添加标签。", "Used when no custom rule matches; detects the title, issue and links. Choose “No tag” to add no tag.")))
                 .child(div().flex().flex_wrap().items_end().gap_3()
@@ -2156,7 +2156,7 @@ impl Workspace {
             .child(div().border_t_1().border_color(p.border).pt_4().flex().flex_col().gap_3()
                 .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(self.t("实时预览（包含未保存的草稿）", "Live preview (includes unsaved draft)").to_owned()))
                 .child(Input::new(&self.settings_editor.preview).small().h(px(85.)))
-                .child(div().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(preview)))
+                .child(div().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.surface).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(preview)))
             .into_any_element()
     }
 
@@ -2251,7 +2251,7 @@ impl Workspace {
                     .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.t("肆", "Four Quadrants")))
                     .child(div().px_2().py(px(2.)).rounded(px(4.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(10.)).text_color(p.muted).child("GPUI")))
                 .child(div().text_size(px(13.)).text_color(p.muted).child(format!("{} {}", self.t("版本", "Version"), env!("CARGO_PKG_VERSION"))))))
-        .child(div().flex().flex_col().gap_2().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle)
+        .child(div().flex().flex_col().gap_2().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.surface)
             .child(div().font_weight(FontWeight::MEDIUM).child(self.t(zh, en).to_owned()))
             .when(!detail.is_empty(), |el| el.child(div().text_size(px(12.)).text_color(p.muted).child(detail)))
             .child(div().flex().flex_wrap().gap_2().pt_2()
@@ -2284,7 +2284,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| this.import_file(true, window, cx))))
                 .child(chip("settings-sync-reminders", self.t("同步系统通知", "Sync notifications").to_owned(), p)
                     .on_click(cx.listener(|this, _, window, cx| this.sync_reminders(window, cx)))))
-            .child(div().flex().items_start().gap_2().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(11.)).text_color(p.muted)
+            .child(div().flex().items_start().gap_2().p_3().rounded(px(6.)).border_1().border_color(p.border).bg(p.surface).text_size(px(11.)).text_color(p.muted)
                 .child(glyph(IconName::Folder))
                 .child(div().flex_1().min_w_0().child(directory.to_string_lossy().into_owned())))
             .child(chip("settings-reveal-storage", self.t("在 Finder 中显示数据目录", "Reveal data folder in Finder").to_owned(), p)

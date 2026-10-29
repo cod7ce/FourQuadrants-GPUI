@@ -10,7 +10,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 use uuid::Uuid;
 
@@ -71,6 +71,8 @@ pub fn quadrant_flags(quadrant: usize) -> (bool, bool) {
 pub struct Document {
     pub schema_version: u32,
     pub tasks: Vec<Task>,
+    /// View state kept separate from task content so Pin never changes import identity.
+    pub pinned_task_ids: BTreeSet<String>,
     pub tags: Vec<Tag>,
     pub week_notes: Vec<WeekNote>,
     /// Conflicting versions of a week note (same week, different content).
@@ -89,6 +91,7 @@ impl Default for Document {
             // Keep plain documents compatible with schema 1 until Markdown is saved.
             schema_version: 1,
             tasks: Vec::new(),
+            pinned_task_ids: BTreeSet::new(),
             tags: Vec::new(),
             week_notes: Vec::new(),
             archived_week_notes: Vec::new(),
@@ -769,6 +772,14 @@ impl Document {
         Ok(id)
     }
 
+    pub fn toggle_pin(&mut self, id: &str) -> Result<()> {
+        ensure!(self.task(id).is_some(), "task {id} not found");
+        if !self.pinned_task_ids.remove(id) {
+            self.pinned_task_ids.insert(id.to_owned());
+        }
+        Ok(())
+    }
+
     /// Toggles exactly one task. The original does not recursively toggle the
     /// subtree, so children keep their own completion state.
     pub fn toggle_complete(&mut self, id: &str) {
@@ -776,6 +787,9 @@ impl Document {
         if let Some(task) = self.task_mut(id) {
             task.completed = !task.completed;
             task.completed_at = if task.completed { Some(now) } else { None };
+            if task.completed {
+                self.pinned_task_ids.remove(id);
+            }
         }
     }
 
@@ -787,6 +801,7 @@ impl Document {
         }
         let remove: HashSet<String> = self.collect_subtree_ids(id).into_iter().collect();
         self.tasks.retain(|task| !remove.contains(&task.id));
+        self.pinned_task_ids.retain(|id| !remove.contains(id));
     }
 
     /// Moves a task (and all descendants) to a week and quadrant. The task
@@ -1090,6 +1105,7 @@ impl Document {
 
         let Document {
             tasks: other_tasks,
+            pinned_task_ids: other_pins,
             tags: other_tags,
             week_notes: other_notes,
             archived_week_notes: other_archived_notes,
@@ -1254,6 +1270,15 @@ impl Document {
             staged.tasks.push(task);
         }
         staged.tags.extend(tags_to_add);
+        // Restore imported pins only for newly inserted tasks. Re-importing a
+        // document must not undo local pin/unpin decisions on existing tasks.
+        for source_id in other_pins {
+            if let Some(id) = task_id_map.get(&source_id)
+                && !existing_tasks.contains_key(id)
+            {
+                staged.pinned_task_ids.insert(id.clone());
+            }
+        }
 
         // Orphan progress notes ------------------------------------------------
         for mut note in other_orphans {
@@ -1348,6 +1373,13 @@ impl Document {
                 task_by_id.insert(task.id.as_str(), task).is_none(),
                 "duplicate task id {}",
                 task.id
+            );
+        }
+
+        for id in &self.pinned_task_ids {
+            ensure!(
+                task_by_id.contains_key(id.as_str()),
+                "dangling pinned task {id}"
             );
         }
 
@@ -1494,6 +1526,7 @@ impl Document {
         {
             task.completed = true;
             task.completed_at = Some(now);
+            self.pinned_task_ids.remove(id);
         }
     }
 
@@ -1741,6 +1774,96 @@ mod tests {
         let id = doc.add_task(title, date(2026, 7, 6), 0);
         doc.reparent(&id, Some(parent)).unwrap();
         id
+    }
+
+    #[test]
+    fn pins_default_empty_and_follow_task_lifecycle() {
+        let mut doc: Document = serde_json::from_value(json!({"tasks": []})).unwrap();
+        assert!(doc.pinned_task_ids.is_empty());
+        let parent = doc.add_task("parent", date(2026, 10, 26), 0);
+        doc.toggle_pin(&parent).unwrap();
+        let child = doc.add_subtask("child", &parent).unwrap();
+        assert!(!doc.pinned_task_ids.contains(&child));
+        doc.toggle_pin(&child).unwrap();
+        let other = doc.add_task("other", date(2026, 10, 26), 1);
+        doc.toggle_pin(&other).unwrap();
+        doc.toggle_pin(&other).unwrap();
+        assert!(!doc.pinned_task_ids.contains(&other));
+        doc.toggle_pin(&other).unwrap();
+        assert!(doc.toggle_pin("missing").is_err());
+        doc.toggle_complete(&parent);
+        assert!(!doc.pinned_task_ids.contains(&parent));
+        assert!(doc.pinned_task_ids.contains(&child));
+        doc.toggle_complete(&parent);
+        assert!(!doc.pinned_task_ids.contains(&parent));
+        // Explicitly pinning an already-completed task is still supported.
+        doc.toggle_complete(&other);
+        doc.toggle_pin(&other).unwrap();
+        doc.delete_task(&parent);
+        assert_eq!(doc.pinned_task_ids, BTreeSet::from([other]));
+        doc.validate().unwrap();
+        doc.pinned_task_ids.insert(child);
+        assert!(doc.validate().is_err());
+    }
+
+    #[test]
+    fn carry_completion_clears_parent_pin_and_preserves_moved_child_pin() {
+        let week = date(2026, 10, 26);
+        let mut doc = Document::default();
+        let parent = doc.add_task("parent", week, 0);
+        let child = doc.add_subtask("child", &parent).unwrap();
+        doc.toggle_pin(&parent).unwrap();
+        doc.toggle_pin(&child).unwrap();
+        doc.carry_forward(week, date(2026, 11, 2));
+        assert!(doc.task(&parent).unwrap().completed);
+        assert_eq!(doc.pinned_task_ids, BTreeSet::from([child]));
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn pin_import_remaps_collisions_and_preserves_local_choices_on_repeat() {
+        let (mut source, parent) = doc_with_task("imported parent");
+        let child = source.add_subtask("imported child", &parent).unwrap();
+        source.toggle_pin(&parent).unwrap();
+        source.toggle_pin(&child).unwrap();
+        let mut local = source.clone();
+        local.pinned_task_ids.clear();
+        // Pins alone do not make a task a different import entity.
+        assert_eq!(local.merge(source.clone()).unwrap(), 0);
+        assert!(local.pinned_task_ids.is_empty());
+        local.task_mut(&parent).unwrap().title = "local parent".into();
+        local.task_mut(&child).unwrap().title = "local child".into();
+        assert_eq!(local.merge(source.clone()).unwrap(), 2);
+        let imported_parent = local
+            .tasks
+            .iter()
+            .find(|t| t.title == "imported parent")
+            .unwrap()
+            .id
+            .clone();
+        let imported_child = local
+            .tasks
+            .iter()
+            .find(|t| t.title == "imported child")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(
+            local.task(&imported_child).unwrap().parent_id.as_deref(),
+            Some(imported_parent.as_str())
+        );
+        assert_eq!(
+            local.pinned_task_ids,
+            BTreeSet::from([imported_parent.clone(), imported_child])
+        );
+        local.toggle_pin(&imported_parent).unwrap();
+        let saved = local.clone();
+        assert_eq!(local.merge(source.clone()).unwrap(), 0);
+        assert_eq!(local, saved);
+        // Changing source pins must not change historical stable import IDs either.
+        source.pinned_task_ids.clear();
+        assert_eq!(local.merge(source).unwrap(), 0);
+        assert_eq!(local, saved);
     }
 
     #[test]

@@ -6,6 +6,10 @@ pub struct Palette {
     pub bg: Hsla,
     pub panel: Hsla,
     pub card: Hsla,
+    /// Large bordered containers such as quadrants and day cards.
+    /// Explicit window effects use a much lighter fill than `subtle`, keeping
+    /// the window's single backdrop readable while the panel edges stay visible.
+    pub surface: Hsla,
     pub subtle: Hsla,
     pub hover: Hsla,
     pub text: Hsla,
@@ -58,6 +62,7 @@ impl Palette {
             } else {
                 custom_colors(&settings.appearance_values(), dark)
             };
+        let explicit_effects = settings.window_effects.is_some();
         let (alpha, panel_alpha, translucent) = match &settings.window_effects {
             // A single background tint makes both endpoints exact and keeps the
             // sidebar and main pane equally transparent, without fading text.
@@ -68,6 +73,18 @@ impl Palette {
                 settings.glass,
             ),
         };
+        // With explicit effects, content sits one lightness point below the
+        // configured shell, matching the terminal-style backdrop: the window
+        // paints one backdrop and bordered panels add only a faint surface fill.
+        let bg = if explicit_effects && dark {
+            Hsla {
+                l: (bg.l - 0.01).max(0.),
+                ..bg
+            }
+        } else {
+            bg
+        };
+        let subtle = foreground.opacity(if dark { 0.025 } else { 0.018 });
         Self {
             bg: bg.opacity(alpha),
             panel: panel.opacity(panel_alpha),
@@ -76,11 +93,17 @@ impl Palette {
             } else {
                 card
             },
-            subtle: foreground.opacity(if dark { 0.025 } else { 0.018 }),
+            surface: if explicit_effects {
+                // Keep large panels legible without adding the old 2.5% wash.
+                foreground.opacity(if dark { 0.015 } else { 0.012 })
+            } else {
+                subtle
+            },
+            subtle,
             hover: foreground.opacity(if dark { 0.085 } else { 0.065 }),
             text: foreground,
             muted,
-            border: foreground.opacity(if dark { 0.075 } else { 0.10 }),
+            border: foreground.opacity(if dark { 0.08 } else { 0.12 }),
             accent,
             accent_text,
             selected: foreground.opacity(if dark { 0.10 } else { 0.07 }),
@@ -263,7 +286,7 @@ pub fn quadrant_description(q: usize, english: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{Palette, contrast, glass_tint_alpha, luminance};
-    use crate::model::{AppearanceSettings, Settings};
+    use crate::model::{AppearanceSettings, Settings, WindowEffectsSettings};
     use gpui::{Hsla, Rgba, WindowAppearance, rgb};
 
     #[test]
@@ -482,6 +505,8 @@ mod tests {
                 let clear = Palette::new(&settings, appearance);
                 assert_eq!(clear.bg.a, 1. - transparency);
                 assert_eq!(clear.panel.a, 0.);
+                assert!(clear.surface.a > 0.);
+                assert!(clear.surface.a < clear.subtle.a);
                 assert_eq!(clear.text.a, 1.);
                 assert_eq!(clear.muted.a, 1.);
                 assert_eq!(clear.accent.a, 1.);
@@ -489,9 +514,45 @@ mod tests {
                 let blurred = Palette::new(&settings, appearance);
                 assert_eq!(clear.bg, blurred.bg);
                 assert_eq!(clear.panel, blurred.panel);
+                assert_eq!(clear.surface, blurred.surface);
                 assert_eq!(clear.text, blurred.text);
             }
         }
+    }
+
+    #[test]
+    fn explicit_dark_content_sits_one_point_below_the_configured_shell() {
+        let appearance = Some(AppearanceSettings {
+            hue: 220.,
+            saturation: 0.5,
+            dark_lightness: 0.05,
+            accent_hex: "#08B03A".into(),
+        });
+        let settings = Settings {
+            theme: "dark".into(),
+            appearance: appearance.clone(),
+            window_effects: Some(WindowEffectsSettings {
+                transparency: 0.1,
+                blur_radius: 10.,
+            }),
+            ..Default::default()
+        };
+        let explicit = Palette::new(&settings, WindowAppearance::Dark);
+        assert!((explicit.bg.l - 0.04).abs() < 1e-6);
+        assert!((explicit.bg.a - 0.9).abs() < 1e-6);
+        assert!((explicit.surface.a - 0.015).abs() < 1e-6);
+        assert!((explicit.panel.l - 0.04).abs() < 1e-6);
+
+        // Without explicit effects the configured lightness and panel wash stay as before.
+        let settings = Settings {
+            appearance,
+            glass: false,
+            ..Default::default()
+        };
+        let opaque = Palette::new(&settings, WindowAppearance::Dark);
+        assert!((opaque.bg.l - 0.05).abs() < 1e-6);
+        assert_eq!(opaque.bg.a, 1.);
+        assert_eq!(opaque.surface, opaque.subtle);
     }
 
     #[test]

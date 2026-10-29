@@ -172,7 +172,6 @@ pub struct Workspace {
     pub week: NaiveDate,
     pub day: NaiveDate,
     pub selected: Option<String>,
-    task_focus: task_focus::TaskFocus,
     pub tag_filter: Option<String>,
     pub search: Entity<InputState>,
     search_open: bool,
@@ -565,6 +564,16 @@ fn weekly_group(
     Some(group)
 }
 
+fn weekly_days(
+    week: NaiveDate,
+    today: NaiveDate,
+    hide_completed: bool,
+) -> impl Iterator<Item = (usize, NaiveDate)> {
+    (0..7)
+        .map(move |offset| (offset, week + Duration::days(offset as i64)))
+        .filter(move |(_, date)| !hide_completed || *date >= today)
+}
+
 fn weekly_order_date(task: &Task, completed: bool) -> Option<chrono::DateTime<chrono::Utc>> {
     if completed {
         task.completed_at.or(task.due_date)
@@ -697,7 +706,6 @@ impl Workspace {
             week,
             day: model::today(),
             selected: None,
-            task_focus: task_focus::TaskFocus::default(),
             tag_filter: None,
             search,
             search_open: false,
@@ -776,7 +784,6 @@ impl Workspace {
                             new.remind_at.is_some() && self.doc.task(&new.id) != Some(new)
                         });
                 let previous_settings = self.doc.settings.clone();
-                self.task_focus.reconcile(&self.doc, &next);
                 self.doc = next;
                 self.sync_completion_preferences(&previous_settings);
                 self.error = None;
@@ -922,12 +929,10 @@ impl Workspace {
         } else if event.is_keyboard() {
             self.open_task(id, window, cx);
         } else if self.doc.task(id).is_some() {
-            let open = self
-                .task_focus
-                .click(id, event.modifiers().shift, event.click_count());
-            cx.notify();
-            if open {
+            if event.click_count() == 2 {
                 self.open_task(id, window, cx);
+            } else if event.click_count() < 2 && event.modifiers().shift {
+                self.change(cx, |doc| doc.toggle_pin(id));
             }
         }
     }
@@ -1025,7 +1030,6 @@ impl Workspace {
                     self.redo.push(self.doc.clone());
                 }
                 let previous_settings = self.doc.settings.clone();
-                self.task_focus.reconcile(&self.doc, &target);
                 self.doc = target;
                 self.sync_completion_preferences(&previous_settings);
                 self.reconcile_reminders(cx);
@@ -1646,7 +1650,7 @@ impl Workspace {
                             .border_1()
                             .border_color(transparent_black())
                             .cursor_pointer()
-                            .map(|row| self.task_focus.style(row, &id, p))
+                            .map(|row| task_focus::style(row, &id, &self.doc, p))
                             .border_t_2()
                             .can_drop(move |value, _, cx| {
                                 value.downcast_ref::<DragTask>().is_some_and(|drag| {
@@ -2680,7 +2684,7 @@ impl Workspace {
             .rounded(px(8.))
             .border_1()
             .border_color(p.border)
-            .bg(p.subtle)
+            .bg(p.surface)
             .overflow_hidden()
             .drag_over::<DragTask>(move |style, _, _, _| {
                 style.bg(p.accent.opacity(0.10)).border_color(p.accent)
@@ -2840,8 +2844,8 @@ impl Workspace {
                             .p(px(10.))
                             .rounded(px(6.))
                             .border_1()
-                            .border_color(p.text.opacity(0.14))
-                            .map(|row| self.task_focus.style(row, &id, p))
+                            .border_color(p.text.opacity(if p.dark { 0.10 } else { 0.14 }))
+                            .map(|row| task_focus::style(row, &id, &self.doc, p))
                             .cursor(if self.task_link_active(task, window, cx) {
                                 CursorStyle::PointingHand
                             } else {
@@ -2933,7 +2937,8 @@ impl Workspace {
             .iter()
             .filter(|task| {
                 group(task).is_some()
-                    && (self.task_focus.contains(&task.id) || self.confetti.holds_pin(task))
+                    && (self.doc.pinned_task_ids.contains(&task.id)
+                        || self.confetti.holds_pin(task))
                     && self.visible(task, cx)
             })
             .cloned()
@@ -2951,7 +2956,7 @@ impl Workspace {
                     .rounded(px(8.))
                     .border_1()
                     .border_color(p.border)
-                    .bg(p.subtle)
+                    .bg(p.surface)
                     .child(
                         div()
                             .flex_shrink_0()
@@ -3022,7 +3027,7 @@ impl Workspace {
                         .rounded(px(8.))
                         .border_1()
                         .border_color(p.border)
-                        .bg(p.subtle)
+                        .bg(p.surface)
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -3041,8 +3046,7 @@ impl Workspace {
                         )),
                 );
         }
-        for offset in 0..7 {
-            let date = self.week + Duration::days(offset);
+        for (offset, date) in weekly_days(self.week, today, self.doc.settings.hide_completed) {
             let mut tasks = self
                 .doc
                 .tasks
@@ -3054,7 +3058,7 @@ impl Workspace {
             // List descendants independently under their own scheduled day.
             body = body.child(
                 div()
-                    .id(("day", offset as usize))
+                    .id(("day", offset))
                     .flex()
                     .flex_col()
                     .flex_shrink_0()
@@ -3067,7 +3071,7 @@ impl Workspace {
                     } else {
                         p.border
                     })
-                    .bg(p.subtle)
+                    .bg(p.surface)
                     .when(date < model::today(), |el| el.opacity(0.5))
                     .drag_over::<DragTask>(move |style, _, _, _| {
                         style
@@ -3136,7 +3140,7 @@ impl Workspace {
             .px_2()
             .py_2()
             .rounded(px(4.))
-            .map(|row| self.task_focus.style(row, &id, p))
+            .map(|row| task_focus::style(row, &id, &self.doc, p))
             .cursor_pointer()
             .on_drag(
                 DragTask {
@@ -3734,10 +3738,46 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        WeeklyGroup, matches_tag_week, week_completion, week_labels, weekly_group, weekly_order,
+        WeeklyGroup, matches_tag_week, week_completion, week_labels, weekly_days, weekly_group,
+        weekly_order,
     };
     use crate::model::{Document, Task};
     use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
+
+    #[test]
+    fn hiding_completed_days_keeps_today_and_future_days_across_week_boundaries() {
+        let week = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let thursday = week + Duration::days(3);
+        let days = weekly_days(week, thursday, true).collect::<Vec<_>>();
+        assert_eq!(days.len(), 4);
+        assert_eq!(days[0], (3, thursday));
+        assert_eq!(days[3], (6, week + Duration::days(6)));
+        assert_eq!(weekly_days(week, thursday, false).count(), 7);
+        assert_eq!(
+            weekly_days(week - Duration::weeks(1), thursday, true).count(),
+            0
+        );
+        assert_eq!(
+            weekly_days(week + Duration::weeks(1), thursday, true).count(),
+            7
+        );
+        assert_eq!(weekly_days(week, week, true).count(), 7);
+        assert_eq!(weekly_days(week, week + Duration::days(6), true).count(), 1);
+        let mut doc = Document::default();
+        let id = doc.add_task("Monday task", week, 0);
+        doc.schedule(&id, week);
+        let task = doc.task(&id).unwrap();
+        assert_eq!(
+            weekly_group(task, week, thursday, false),
+            Some(WeeklyGroup::Overdue)
+        );
+        // The row remains in Overdue during completion feedback; its old day is not needed.
+        doc.toggle_complete(&id);
+        assert_eq!(
+            weekly_group(doc.task(&id).unwrap(), week, thursday, false),
+            Some(WeeklyGroup::Overdue)
+        );
+    }
 
     #[test]
     fn weekly_groups_keep_tasks_in_their_date_or_unplanned_box() {

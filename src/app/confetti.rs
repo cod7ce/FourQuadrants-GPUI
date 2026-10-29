@@ -210,7 +210,7 @@ impl Workspace {
             return;
         };
         let was_completed = task.completed;
-        let was_pinned = self.task_focus.contains(id);
+        let was_pinned = self.doc.pinned_task_ids.contains(id);
         let origin = match event {
             ClickEvent::Mouse(event) => event.up.position,
             ClickEvent::Keyboard(event) => event.bounds.center(),

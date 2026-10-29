@@ -499,6 +499,45 @@ mod tests {
     }
 
     #[test]
+    fn pins_survive_restart_completion_history_and_failed_save() {
+        let dir = TempDir::new();
+        let path = dir.path.join("pins.json");
+        let store = Store::at(path.clone());
+        let mut doc = Document::default();
+        let id = doc.add_task("pinned", date(2026, 10, 26), 0);
+        doc.toggle_pin(&id).unwrap();
+        store.save(&doc).unwrap();
+        let restarted = Store::at(path.clone());
+        let pinned = restarted.load().unwrap();
+        assert!(pinned.pinned_task_ids.contains(&id));
+        let mut completed = pinned.clone();
+        completed.toggle_complete(&id);
+        restarted.save(&completed).unwrap();
+        assert!(
+            Store::at(path.clone())
+                .load()
+                .unwrap()
+                .pinned_task_ids
+                .is_empty()
+        );
+        assert!(
+            import(&restarted.backup_path())
+                .unwrap()
+                .pinned_task_ids
+                .contains(&id)
+        );
+        // History restores a whole snapshot, including its Pin state.
+        restarted.save(&pinned).unwrap();
+        assert_eq!(restarted.load().unwrap(), pinned);
+        restarted.save(&completed).unwrap();
+        assert_eq!(restarted.load().unwrap(), completed);
+        // The old instance cannot write its stale pinned snapshot over completion.
+        assert!(store.save(&doc).is_err());
+        assert!(doc.pinned_task_ids.contains(&id));
+        assert_eq!(Store::at(path).load().unwrap(), completed);
+    }
+
+    #[test]
     fn schema_one_load_and_save_preserve_version_and_exact_legacy_fields() {
         let dir = TempDir::new();
         let path = dir.path.join("legacy.json");
