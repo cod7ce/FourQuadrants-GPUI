@@ -7,6 +7,7 @@ fn main() {
             .file("native/WindowMaterial.m")
             .file("native/CompletionSound.m")
             .flag("-fobjc-arc")
+            .flag("-fobjc-exceptions")
             .compile("four_quadrants_material");
         cc::Build::new()
             .file("native/Updater.m")

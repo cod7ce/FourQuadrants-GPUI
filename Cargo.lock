@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "four-quadrants"
-version = "0.20.6"
+version = "0.20.7"
 dependencies = [
  "anyhow",
  "base64",

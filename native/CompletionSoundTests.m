@@ -6,6 +6,9 @@
 
 static NSUInteger FQTestEngineCount;
 static BOOL FQTestStartFails;
+static BOOL FQTestStartThrows;
+static BOOL FQTestPlayThrows;
+static BOOL FQTestStopThrows;
 
 @interface FQFakeAudioNode : NSObject
 @property (nonatomic) BOOL stalled;
@@ -41,14 +44,25 @@ static BOOL FQTestStartFails;
     if ((self = [super init])) self.callbacks = [NSMutableArray array];
     return self;
 }
-- (void)play { self.playing = YES; }
+- (void)play {
+    if (FQTestPlayThrows) {
+        [NSException raise:@"com.apple.coreaudio.avfaudio" format:@"player did not see an IO cycle."];
+    }
+    self.playing = YES;
+}
 - (BOOL)playAndReturnError:(NSError **)error { (void)error; [self play]; return YES; }
 - (void)finish {
     NSArray *callbacks = self.callbacks;
     self.callbacks = [NSMutableArray array];
     for (AVAudioPlayerNodeCompletionHandler callback in callbacks) callback(self.callbackType);
 }
-- (void)stop { self.playing = NO; [self finish]; }
+- (void)stop {
+    if (FQTestStopThrows) {
+        [NSException raise:@"com.apple.coreaudio.avfaudio" format:@"stop failed"];
+    }
+    self.playing = NO;
+    [self finish];
+}
 - (void)scheduleBuffer:(AVAudioPCMBuffer *)buffer atTime:(AVAudioTime *)time
     options:(AVAudioPlayerNodeBufferOptions)options
     completionCallbackType:(AVAudioPlayerNodeCompletionCallbackType)type
@@ -94,11 +108,19 @@ static BOOL FQTestStartFails;
 }
 - (BOOL)startAndReturnError:(NSError **)error {
     (void)error;
+    if (FQTestStartThrows) {
+        [NSException raise:@"com.apple.coreaudio.avfaudio" format:@"engine start failed"];
+    }
     self.running = !FQTestStartFails;
     return self.running;
 }
 - (void)prepare {}
-- (void)stop { self.running = NO; }
+- (void)stop {
+    if (FQTestStopThrows) {
+        [NSException raise:@"com.apple.coreaudio.avfaudio" format:@"engine stop failed"];
+    }
+    self.running = NO;
+}
 @end
 
 #define AVAudioEngine FQFakeAudioEngine
@@ -155,13 +177,20 @@ int main(int argc, const char *argv[]) {
             FQCompletionPlayer.stalled = YES;
             FQCheckCompletionAudioHealth();
         });
+        assert(FQTestEngineCount == created);
+        FQRequestSound();
         assert(FQTestEngineCount == ++created);
+        FQFinishSound();
         dispatch_sync(FQCompletionSoundQueue, ^{
             FQCompletionEngine.outputNode.stalled = YES;
+            FQCompletionConfigurationChanged(FQCompletionEngine);
             FQCheckCompletionAudioHealth();
         });
+        assert(FQTestEngineCount == created);
+        FQRequestSound();
         assert(FQTestEngineCount == ++created);
-        puts("player and output render stalls rebuild independently: passed");
+        FQFinishSound();
+        puts("idle health and device changes leave stale audio alone; playback rebuilds it: passed");
 
         FQRequestSound();
         dispatch_sync(FQCompletionSoundQueue, ^{ [FQCompletionPlayer stop]; });
@@ -227,10 +256,41 @@ int main(int argc, const char *argv[]) {
         FQRequestSound();
         assert(!FQCompletionPending && !FQCompletionEngine);
         FQTestStartFails = NO;
-        dispatch_sync(FQCompletionSoundQueue, ^{ FQCheckCompletionAudioHealth(); });
+        FQRequestSound();
+        FQFinishSound();
         assert(FQCompletionEngine.isRunning && FQCompletionPlayer.isPlaying);
         FQEnableSound(NO);
-        puts("startup failure is bounded and a later health check can recover: passed");
+        puts("startup failure is bounded and a later play recovers: passed");
+
+        FQTestStartThrows = YES;
+        FQEnableSound(YES);
+        NSUInteger beforeStartThrows = FQTestEngineCount;
+        FQRequestSound();
+        assert(FQTestEngineCount == beforeStartThrows + 2);
+        assert(!FQCompletionPending && !FQCompletionEngine);
+        FQTestStartThrows = NO;
+        FQEnableSound(NO);
+        puts("engine start exceptions are contained and retried once: passed");
+
+        FQEnableSound(YES);
+        assert(FQCompletionEngine.isRunning && FQCompletionPlayer.isPlaying);
+        dispatch_sync(FQCompletionSoundQueue, ^{ FQCompletionPlayer.playing = NO; });
+        FQTestPlayThrows = YES;
+        NSUInteger beforePlayThrows = FQTestEngineCount;
+        FQRequestSound();
+        assert(FQTestEngineCount == beforePlayThrows + 2);
+        assert(!FQCompletionPending && !FQCompletionEngine);
+        FQTestPlayThrows = NO;
+        FQRequestSound();
+        FQFinishSound();
+        assert(FQCompletionEngine.isRunning && FQCompletionPlayer.isPlaying);
+        puts("player start exceptions are contained and retried once: passed");
+
+        FQTestStopThrows = YES;
+        FQEnableSound(NO);
+        assert(!FQCompletionEngine && !FQCompletionPending);
+        FQTestStopThrows = NO;
+        puts("teardown exceptions cannot escape the audio queue: passed");
     }
     return 0;
 }
