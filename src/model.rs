@@ -342,6 +342,8 @@ pub struct Settings {
     pub hide_completed: bool,
     pub task_confetti: bool,
     pub task_completion_sound: bool,
+    /// Show pinned tasks in a floating, hover-expandable desktop island.
+    pub island_enabled: bool,
     /// The sidebar uses a compact icon rail to leave more room for content.
     pub sidebar_collapsed: bool,
     pub glass: bool,
@@ -373,6 +375,7 @@ impl Default for Settings {
             hide_completed: false,
             task_confetti: true,
             task_completion_sound: true,
+            island_enabled: false,
             sidebar_collapsed: false,
             glass: true,
             opacity: 0.50,

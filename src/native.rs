@@ -33,6 +33,17 @@ unsafe extern "C" {
         bounds: *mut f64,
     ) -> i32;
     fn fq_configure_task_dialog(view: *mut std::ffi::c_void) -> i32;
+    fn fq_hide_workspace(view: *mut std::ffi::c_void) -> i32;
+    fn fq_configure_workspace_reopen();
+    fn fq_island_bounds(
+        view: *mut std::ffi::c_void,
+        width: f64,
+        height: f64,
+        bounds: *mut f64,
+    ) -> i32;
+    fn fq_island_layout(view: *mut std::ffi::c_void, values: *mut f64) -> i32;
+    fn fq_configure_island(view: *mut std::ffi::c_void) -> i32;
+    fn fq_resize_island(view: *mut std::ffi::c_void, width: f64, height: f64) -> i32;
 }
 
 pub const RELEASES_URL: &str = "https://github.com/cod7ce/FourQuadrants-GPUI/releases";
@@ -297,6 +308,107 @@ pub fn task_dialog_bounds(
         let _ = (parent, desired);
         bail!("Task dialogs require macOS");
     }
+}
+
+/// Synchronously borrow a GPUI NSView; native async operations retain only weak windows.
+#[cfg(target_os = "macos")]
+fn with_native_view<T>(
+    window: &gpui::Window,
+    operation: impl FnOnce(*mut std::ffi::c_void) -> T,
+) -> Result<T> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| anyhow::anyhow!("Cannot access native window: {error}"))?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        bail!("Expected an AppKit window");
+    };
+    Ok(operation(handle.ns_view.as_ptr()))
+}
+
+pub fn configure_workspace_reopen() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        fq_configure_workspace_reopen()
+    }
+}
+
+pub fn hide_workspace(window: &gpui::Window) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if with_native_view(window, |view| unsafe { fq_hide_workspace(view) })? == 0 {
+        bail!("无法关闭主窗口 / Cannot hide workspace window");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IslandDisplay {
+    pub id: u32,
+    pub width: f32,
+    pub height: f32,
+    pub notch_width: f32,
+    pub notch_height: f32,
+    pub menu_bar_height: f32,
+}
+
+pub fn island_display(window: &gpui::Window) -> Result<IslandDisplay> {
+    let mut values = [0.; 6];
+    #[cfg(target_os = "macos")]
+    if with_native_view(window, |view| unsafe {
+        fq_island_layout(view, values.as_mut_ptr())
+    })? == 0
+    {
+        bail!("无法读取屏幕刘海区域 / Cannot read display safe area");
+    }
+    Ok(IslandDisplay {
+        id: values[0] as u32,
+        width: values[1] as f32,
+        height: values[2] as f32,
+        notch_width: values[3] as f32,
+        notch_height: values[4] as f32,
+        menu_bar_height: values[5] as f32,
+    })
+}
+
+pub fn island_bounds(
+    parent: &gpui::Window,
+    desired: gpui::Size<gpui::Pixels>,
+) -> Result<gpui::Bounds<gpui::Pixels>> {
+    let mut bounds = [0.; 4];
+    #[cfg(target_os = "macos")]
+    if with_native_view(parent, |view| unsafe {
+        fq_island_bounds(
+            view,
+            desired.width.into(),
+            desired.height.into(),
+            bounds.as_mut_ptr(),
+        )
+    })? == 0
+    {
+        bail!("无法确定 Island 位置 / Cannot position Island");
+    }
+    Ok(gpui::Bounds::new(
+        gpui::point(gpui::px(bounds[0] as f32), gpui::px(bounds[1] as f32)),
+        gpui::size(gpui::px(bounds[2] as f32), gpui::px(bounds[3] as f32)),
+    ))
+}
+
+pub fn configure_island(window: &gpui::Window) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if with_native_view(window, |view| unsafe { fq_configure_island(view) })? == 0 {
+        bail!("无法创建 Island 浮窗 / Cannot configure Island");
+    }
+    Ok(())
+}
+
+pub fn resize_island(window: &gpui::Window, desired: gpui::Size<gpui::Pixels>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if with_native_view(window, |view| unsafe {
+        fq_resize_island(view, desired.width.into(), desired.height.into())
+    })? == 0
+    {
+        bail!("无法调整 Island 大小 / Cannot resize Island");
+    }
+    Ok(())
 }
 
 /// Configures and activates an independent GPUI `WindowKind::PopUp` panel.

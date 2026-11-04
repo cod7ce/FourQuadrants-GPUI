@@ -2167,6 +2167,25 @@ impl Workspace {
             p,
         )
         .child(
+            div().flex().flex_col().gap_2().pb_4().border_b_1().border_color(p.border)
+                .child(
+                    Switch::new("settings-island")
+                        .small()
+                        .checked(s.island_enabled)
+                        .label(self.t("Island 浮岛", "Island mode").to_owned())
+                        .on_click(cx.listener(|this, value: &bool, _, cx| {
+                            this.change(cx, |doc| {
+                                doc.settings.island_enabled = *value;
+                                Ok(())
+                            });
+                        })),
+                )
+                .child(div().text_size(px(12.)).text_color(p.muted).child(self.t(
+                    "让 Pin 任务融入屏幕刘海，悬停展开任务列表。Shift＋单击任务来 Pin；⌘⇧I 开关。",
+                    "Keep pinned tasks in the display notch. Hover for the task list; Shift-click to pin. Toggle with ⌘⇧I.",
+                ).to_owned())),
+        )
+        .child(
             div().flex().flex_col().gap_2()
                 .child(
                     Switch::new("settings-task-confetti")

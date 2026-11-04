@@ -2,6 +2,7 @@ mod accent_picker;
 mod calendar;
 mod confetti;
 mod editor;
+mod island;
 mod notes;
 mod notes_preview;
 mod settings;
@@ -39,6 +40,7 @@ actions!(
     [
         NewTask,
         ToggleSidebar,
+        ToggleIsland,
         Search,
         Settings,
         Undo,
@@ -180,8 +182,11 @@ pub struct Workspace {
     note_subscription: Subscription,
     pub editor: Option<TaskEditor>,
     main_window: AnyWindowHandle,
+    main_window_hidden: bool,
     task_dialog: Option<AnyWindowHandle>,
     task_dialog_generation: u64,
+    island: Option<AnyWindowHandle>,
+    island_generation: u64,
     pub settings_editor: SettingsEditor,
     update_status: crate::native::UpdateStatus,
     updater_task: Option<gpui::Task<()>>,
@@ -684,21 +689,19 @@ impl Workspace {
             if !window.is_window_active() {
                 this.save_week_note(cx);
             } else {
+                this.main_window_hidden = false;
                 this.check_clipboard(window, cx);
             }
         }));
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
-            weak.update(cx, |this, cx| {
-                if !this.prepare_close(window, cx) {
-                    return false;
-                }
-                this.dismiss_task_dialog(window, cx);
-                crate::native::updater_workspace_closed();
-                true
-            })
-            .unwrap_or(true)
+            let _ = weak.update(cx, |this, cx| this.close_main_window(window, cx));
+            // Keep the window's entity alive for Island, undo history, native
+            // editors and the updater. Closing only removes it from the screen.
+            false
         });
+        cx.on_release(|_, _| crate::native::updater_workspace_closed())
+            .detach();
         let mut workspace = Self {
             doc,
             store,
@@ -714,8 +717,11 @@ impl Workspace {
             note_subscription,
             editor: None,
             main_window: window.window_handle(),
+            main_window_hidden: false,
             task_dialog: None,
             task_dialog_generation: 0,
+            island: None,
+            island_generation: 0,
             settings_editor,
             update_status: crate::native::UpdateStatus::default(),
             updater_task: None,
@@ -740,6 +746,26 @@ impl Workspace {
         };
         workspace.reconcile_reminders(cx);
         workspace
+    }
+
+    pub fn show_main_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.main_window_hidden = false;
+        window.activate_window();
+        self.focus.focus(window);
+        cx.activate(true);
+    }
+
+    pub fn close_main_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Native editors may remain open: their owning Workspace is retained.
+        // A failed save keeps the main window visible so the error can be fixed.
+        if !self.save_editor(window, cx) || !self.save_week_note(cx) {
+            return;
+        }
+        match crate::native::hide_workspace(window) {
+            Ok(()) => self.main_window_hidden = true,
+            Err(error) => self.error = Some(format!("{error:#}")),
+        }
+        cx.notify();
     }
 
     pub fn prepare_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -786,6 +812,9 @@ impl Workspace {
                 let previous_settings = self.doc.settings.clone();
                 self.doc = next;
                 self.sync_completion_preferences(&previous_settings);
+                if previous_settings.island_enabled != self.doc.settings.island_enabled {
+                    self.sync_island(cx);
+                }
                 self.error = None;
                 self.status = self.t("已保存", "Saved").into();
                 if reminders_changed {
@@ -1032,6 +1061,9 @@ impl Workspace {
                 let previous_settings = self.doc.settings.clone();
                 self.doc = target;
                 self.sync_completion_preferences(&previous_settings);
+                if previous_settings.island_enabled != self.doc.settings.island_enabled {
+                    self.sync_island(cx);
+                }
                 self.reconcile_reminders(cx);
                 self.dismiss_task_dialog(window, cx);
                 self.focus.focus(window);
@@ -2054,6 +2086,53 @@ impl Workspace {
         }
         sidebar
             .child(navigation)
+            .child(
+                div()
+                    .id("island-mode")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(if collapsed {
+                        SIDEBAR_RAIL_BUTTON_SIZE
+                    } else {
+                        36.
+                    }))
+                    .px_2()
+                    .rounded(px(6.))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(if self.doc.settings.island_enabled {
+                        p.accent
+                    } else {
+                        p.muted
+                    })
+                    .bg(if self.doc.settings.island_enabled {
+                        p.selected
+                    } else {
+                        transparent_black()
+                    })
+                    .hover(move |s| s.bg(p.hover))
+                    .when(collapsed, |el| el.px_0().justify_center())
+                    .child(glyph(IconName::PanelBottom).with_size(px(if collapsed {
+                        18.
+                    } else {
+                        15.
+                    })))
+                    .when(!collapsed, |el| {
+                        el.child("Island").child(div().flex_1()).child(
+                            div()
+                                .text_size(px(10.))
+                                .child(if self.doc.settings.island_enabled {
+                                    "ON"
+                                } else {
+                                    ""
+                                }),
+                        )
+                    })
+                    .tooltip(|window, cx| Tooltip::new("Island · ⌘⇧I").build(window, cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_island(cx))),
+            )
             .child(
                 div()
                     .id("settings")
@@ -3314,6 +3393,7 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleIsland, _, cx| this.toggle_island(cx)))
             .on_action(cx.listener(|this, _: &Search, window, cx| {
                 this.search_open = true;
                 this.search.update(cx, |i, cx| i.focus(window, cx));
@@ -3351,13 +3431,10 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
-            .on_action(cx.listener(|this, _: &crate::Quit, window, cx| {
-                if this.prepare_close(window, cx) {
-                    cx.quit();
-                } else {
-                    cx.stop_propagation();
-                }
+            .on_action(cx.listener(|this, _: &crate::CloseWindow, window, cx| {
+                this.close_main_window(window, cx);
             }))
+            .on_action(|_: &crate::Quit, _, cx| crate::quit_application(cx))
             .on_action(cx.listener(|this, _: &ToggleCompleted, _, cx| {
                 this.change(cx, |doc| {
                     doc.settings.hide_completed = !doc.settings.hide_completed;

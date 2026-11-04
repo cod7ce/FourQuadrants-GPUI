@@ -10,13 +10,54 @@ use gpui_component::Root;
 use gpui_component_assets::Assets as ComponentAssets;
 use std::borrow::Cow;
 
-actions!(application, [Quit]);
+actions!(application, [Quit, CloseWindow]);
+
+struct ApplicationWorkspace {
+    view: Entity<Workspace>,
+    window: AnyWindowHandle,
+}
+impl Global for ApplicationWorkspace {}
+
+fn show_workspace(cx: &mut App) {
+    let Some(workspace) = cx.try_global::<ApplicationWorkspace>() else {
+        return;
+    };
+    let view = workspace.view.clone();
+    let handle = workspace.window;
+    let _ = handle.update(cx, |_, window, cx| {
+        view.update(cx, |workspace, cx| workspace.show_main_window(window, cx));
+    });
+}
+
+fn quit_application(cx: &mut App) {
+    // This also runs with no visible windows, when native menus cannot route
+    // through a focused view. Always keep the draft/native-editor save gate.
+    cx.defer(|cx| {
+        let Some(workspace) = cx.try_global::<ApplicationWorkspace>() else {
+            return;
+        };
+        let view = workspace.view.clone();
+        let handle = workspace.window;
+        let ready = handle
+            .update(cx, |_, window, cx| {
+                view.update(cx, |workspace, cx| workspace.prepare_close(window, cx))
+            })
+            .unwrap_or(false);
+        if ready {
+            cx.quit();
+        } else {
+            show_workspace(cx);
+        }
+    });
+}
 
 #[derive(Clone, Copy, PartialEq, Action)]
 #[action(namespace = application, no_json)]
 enum MenuCommand {
     Settings,
     Quit,
+    ShowWorkspace,
+    CloseWindow,
     NewTask,
     PasteTask,
     ExportMarkdown,
@@ -27,6 +68,7 @@ enum MenuCommand {
     Paste,
     SelectAll,
     ToggleSidebar,
+    ToggleIsland,
     ShowBoard,
     ShowAgenda,
     ShowCalendar,
@@ -38,6 +80,8 @@ impl MenuCommand {
         match self {
             Self::Settings => Box::new(Settings),
             Self::Quit => Box::new(Quit),
+            Self::ShowWorkspace => Box::new(ShowBoard),
+            Self::CloseWindow => Box::new(CloseWindow),
             Self::NewTask => Box::new(NewTask),
             Self::PasteTask => Box::new(PasteTask),
             Self::ExportMarkdown => Box::new(ExportMarkdown),
@@ -48,6 +92,7 @@ impl MenuCommand {
             Self::Paste => Box::new(gpui_component::input::Paste),
             Self::SelectAll => Box::new(gpui_component::input::SelectAll),
             Self::ToggleSidebar => Box::new(ToggleSidebar),
+            Self::ToggleIsland => Box::new(ToggleIsland),
             Self::ShowBoard => Box::new(ShowBoard),
             Self::ShowAgenda => Box::new(ShowAgenda),
             Self::ShowCalendar => Box::new(ShowCalendar),
@@ -61,27 +106,70 @@ fn init_menu_commands(cx: &mut App) {
     // excludes GPUIPanel. A distinct global action also works when AppKit keeps
     // the main workspace as mainWindow while the task panel receives keyboard input.
     cx.on_action(|command: &MenuCommand, cx| {
+        if *command == MenuCommand::Quit {
+            quit_application(cx);
+            return;
+        }
+        if *command == MenuCommand::ShowWorkspace {
+            cx.defer(show_workspace);
+            return;
+        }
+        let close = *command == MenuCommand::CloseWindow;
+        let workspace_command = matches!(
+            command,
+            MenuCommand::Settings
+                | MenuCommand::NewTask
+                | MenuCommand::PasteTask
+                | MenuCommand::ExportMarkdown
+                | MenuCommand::Undo
+                | MenuCommand::Redo
+                | MenuCommand::ToggleSidebar
+                | MenuCommand::ShowBoard
+                | MenuCommand::ShowAgenda
+                | MenuCommand::ShowCalendar
+                | MenuCommand::ShowNotes
+        );
         let action = command.action();
         cx.defer(move |cx| {
             for handle in cx.windows() {
-                let is_active = handle
-                    .update(cx, |_, window, _| window.is_window_active())
-                    .unwrap_or(false);
+                let (is_active, can_handle) = handle
+                    .update(cx, |_, window, cx| {
+                        (
+                            window.is_window_active(),
+                            window.is_action_available(action.as_ref(), cx),
+                        )
+                    })
+                    .unwrap_or((false, false));
                 if is_active {
+                    // Island has no workspace editors or navigation. Fall back
+                    // to the retained main window for those commands; keep local
+                    // close/toggle and text-editing commands in their own window.
+                    if workspace_command && !can_handle {
+                        break;
+                    }
                     let _ = handle.update(cx, |_, window, cx| {
                         window.dispatch_action(action, cx);
                     });
-                    break;
+                    return;
                 }
+            }
+            if !close {
+                show_workspace(cx);
+            }
+            if let Some(workspace) = cx.try_global::<ApplicationWorkspace>() {
+                let handle = workspace.window;
+                let _ = handle.update(cx, |_, window, cx| window.dispatch_action(action, cx));
             }
         });
     });
+    cx.on_action(|_: &Quit, cx| quit_application(cx));
     // The native menu reads these key equivalents, but this context is never
     // mounted in a view. Keyboard events keep their existing input/workspace bindings.
     cx.bind_keys(
         [
             ("cmd-,", MenuCommand::Settings),
             ("cmd-q", MenuCommand::Quit),
+            ("cmd-w", MenuCommand::CloseWindow),
             ("cmd-n", MenuCommand::NewTask),
             ("cmd-shift-v", MenuCommand::PasteTask),
             ("cmd-e", MenuCommand::ExportMarkdown),
@@ -92,6 +180,7 @@ fn init_menu_commands(cx: &mut App) {
             ("cmd-v", MenuCommand::Paste),
             ("cmd-a", MenuCommand::SelectAll),
             ("cmd-b", MenuCommand::ToggleSidebar),
+            ("cmd-shift-i", MenuCommand::ToggleIsland),
             ("cmd-1", MenuCommand::ShowBoard),
             ("cmd-2", MenuCommand::ShowAgenda),
             ("cmd-3", MenuCommand::ShowCalendar),
@@ -218,7 +307,12 @@ fn cli() -> anyhow::Result<()> {
     } else {
         store::Store::open_default()?
     };
-    Application::new().with_assets(Assets).run(move |cx| {
+    let application = Application::new().with_assets(Assets);
+    // on_reopen runs outside App::update; enter through the window update now
+    // so restoration is flushed even when every document window is hidden.
+    application.on_reopen(show_workspace);
+    application.run(move |cx| {
+        native::configure_workspace_reopen();
         native::set_task_complete_sound_enabled(doc.settings.task_completion_sound);
         if let Err(error) = native::set_application_icon() {
             eprintln!("{error:#}");
@@ -227,8 +321,11 @@ fn cli() -> anyhow::Result<()> {
         // Quit is handled by the workspace so active drafts and rich-text sessions can block it.
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-w", CloseWindow, Some("Workspace")),
+            KeyBinding::new("cmd-w", CloseWindow, Some("Island")),
             KeyBinding::new("cmd-n", NewTask, Some("Workspace")),
             KeyBinding::new("cmd-b", ToggleSidebar, Some("Workspace")),
+            KeyBinding::new("cmd-shift-i", ToggleIsland, None),
             KeyBinding::new("cmd-f", Search, Some("Workspace")),
             KeyBinding::new("cmd-,", Settings, Some("Workspace")),
             KeyBinding::new("cmd-z", Undo, Some("Workspace")),
@@ -275,13 +372,21 @@ fn cli() -> anyhow::Result<()> {
             KeyBinding::new("cmd-0", ResetFont, Some("TaskDialog")),
         ]);
         init_menu_commands(cx);
+        let en = doc.settings.language == "en";
         cx.set_menus(vec![
             Menu {
                 name: "FourQuadrants".into(),
                 items: vec![
                     MenuItem::action("Settings…", MenuCommand::Settings),
                     MenuItem::separator(),
-                    MenuItem::action("Quit", MenuCommand::Quit),
+                    MenuItem::action(
+                        if en {
+                            "Quit FourQuadrants"
+                        } else {
+                            "退出 FourQuadrants"
+                        },
+                        MenuCommand::Quit,
+                    ),
                 ],
             },
             Menu {
@@ -290,6 +395,11 @@ fn cli() -> anyhow::Result<()> {
                     MenuItem::action("New task", MenuCommand::NewTask),
                     MenuItem::action("Paste as task", MenuCommand::PasteTask),
                     MenuItem::action("Export Markdown…", MenuCommand::ExportMarkdown),
+                    MenuItem::separator(),
+                    MenuItem::action(
+                        if en { "Close Window" } else { "关闭窗口" },
+                        MenuCommand::CloseWindow,
+                    ),
                 ],
             },
             Menu {
@@ -307,7 +417,17 @@ fn cli() -> anyhow::Result<()> {
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action(
+                        if en {
+                            "Show Main Window"
+                        } else {
+                            "显示主窗口"
+                        },
+                        MenuCommand::ShowWorkspace,
+                    ),
+                    MenuItem::separator(),
                     MenuItem::action("Toggle sidebar", MenuCommand::ToggleSidebar),
+                    MenuItem::action("Toggle Island", MenuCommand::ToggleIsland),
                     MenuItem::separator(),
                     MenuItem::action("Overview", MenuCommand::ShowBoard),
                     MenuItem::action("Weekly", MenuCommand::ShowAgenda),
@@ -331,9 +451,14 @@ fn cli() -> anyhow::Result<()> {
             },
             move |window, cx| {
                 let view = cx.new(|cx| Workspace::new(doc, store, window, cx));
+                cx.set_global(ApplicationWorkspace {
+                    view: view.clone(),
+                    window: window.window_handle(),
+                });
                 view.update(cx, |view, cx| {
                     view.apply_theme(window, cx);
                     view.start_updater(!alternate_store, window, cx);
+                    view.sync_island(cx);
                     view.focus.focus(window);
                 });
                 cx.new(|cx| Root::new(view, window, cx))
@@ -343,12 +468,8 @@ fn cli() -> anyhow::Result<()> {
             eprintln!("Could not open window: {error:#}");
             cx.quit();
         }
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
+        // macOS keeps the process alive after closing windows. Only an explicit
+        // Quit action (or OS termination) ends the app, after the save gate.
         cx.activate(true);
     });
     Ok(())

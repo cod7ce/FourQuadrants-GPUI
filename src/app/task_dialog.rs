@@ -135,6 +135,10 @@ impl Render for TaskDialog {
                     this.workspace
                         .update(cx, |workspace, cx| workspace.close_task_dialog(window, cx));
                 }))
+                .on_action(cx.listener(|this, _: &crate::CloseWindow, window, cx| {
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.close_task_dialog(window, cx));
+                }))
                 .on_action(cx.listener(|this, _: &SaveTask, window, cx| {
                     this.workspace.update(cx, |workspace, cx| {
                         workspace.save_editor(window, cx);
@@ -144,20 +148,15 @@ impl Render for TaskDialog {
                     this.workspace
                         .update(cx, |workspace, cx| workspace.add_task(0, None, window, cx));
                 }))
-                .on_action(cx.listener(|this, _: &crate::Quit, window, cx| {
-                    let ready = this
-                        .workspace
-                        .update(cx, |workspace, cx| workspace.prepare_close(window, cx));
-                    if ready {
-                        cx.quit();
-                    } else {
-                        cx.stop_propagation();
-                    }
-                }))
+                .on_action(|_: &crate::Quit, _, cx| crate::quit_application(cx))
                 .on_action(cx.listener(|this, _: &Undo, _, cx| this.forward(Box::new(Undo), cx)))
                 .on_action(cx.listener(|this, _: &Redo, _, cx| this.forward(Box::new(Redo), cx)))
                 .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                     this.forward(Box::new(ToggleSidebar), cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleIsland, _, cx| {
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.toggle_island(cx));
                 }))
                 .on_action(
                     cx.listener(|this, _: &Search, _, cx| this.forward(Box::new(Search), cx)),
@@ -357,14 +356,16 @@ impl Workspace {
         self.task_dialog = None;
         self.editor = None;
         self.selected = None;
-        let main = self.main_window;
-        let focus = self.focus.clone();
-        cx.defer(move |cx| {
-            let _ = main.update(cx, |_, window, _| {
-                window.activate_window();
-                focus.focus(window);
+        if !self.main_window_hidden {
+            let main = self.main_window;
+            let focus = self.focus.clone();
+            cx.defer(move |cx| {
+                let _ = main.update(cx, |_, window, _| {
+                    window.activate_window();
+                    focus.focus(window);
+                });
             });
-        });
+        }
         cx.notify();
     }
 

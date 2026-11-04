@@ -9,3 +9,4 @@
 *.pem
 *.key
 !/docs/RELEASING.md
+!/docs/ISLAND.md

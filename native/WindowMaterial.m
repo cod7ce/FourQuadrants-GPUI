@@ -196,12 +196,221 @@ int fq_configure_task_dialog(void *renderViewPointer) {
     return [panel makeFirstResponder:renderView] ? 1 : 0;
 }
 
+// GPUI 0.2.2 only delivers Dock reopen when AppKit reports no visible windows.
+// Island is a visible panel even with the workspace closed. Forward that case as
+// having no document windows, keeping GPUI's existing reopen callback and delegate.
+static IMP FQOriginalReopen;
+static BOOL FQWorkspaceReopen(id delegate, SEL selector, NSApplication *application, BOOL visible) {
+    BOOL workspaceVisible = NO;
+    for (NSWindow *window in application.windows) {
+        if (![window isKindOfClass:NSPanel.class] && window.visible && !window.miniaturized) {
+            workspaceVisible = YES;
+            break;
+        }
+    }
+    if (FQOriginalReopen) {
+        ((void (*)(id, SEL, NSApplication *, BOOL))FQOriginalReopen)(delegate, selector, application, visible && workspaceVisible);
+    }
+    return YES;
+}
+
+void fq_configure_workspace_reopen(void) {
+    if (![NSThread isMainThread] || FQOriginalReopen || !NSApp.delegate) return;
+    Method method = class_getInstanceMethod([NSApp.delegate class], @selector(applicationShouldHandleReopen:hasVisibleWindows:));
+    if (method) FQOriginalReopen = method_setImplementation(method, (IMP)FQWorkspaceReopen);
+}
+
+// Keep the workspace and its save/update guards alive when its window is closed.
+// Defer ordering out: AppKit can synchronously call GPUI activation callbacks.
+int fq_hide_workspace(void *pointer) {
+    if (![NSThread isMainThread] || !pointer) return 0;
+    NSWindow *window = ((__bridge NSView *)pointer).window;
+    if (!window) return 0;
+    __weak NSWindow *weakWindow = window;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakWindow orderOut:nil];
+    });
+    return 1;
+}
+
+// Prefer the physical notch even when the workspace lives on an external display.
+// AppKit reports the camera exclusion through public safe-area APIs.
+static NSScreen *FQIslandScreen(NSWindow *owner) {
+    for (NSScreen *screen in NSScreen.screens) {
+        if (screen.safeAreaInsets.top > 0) return screen;
+    }
+    return owner.screen ?: NSScreen.mainScreen;
+}
+
+int fq_island_layout(void *pointer, double *values) {
+    if (![NSThread isMainThread] || !pointer || !values) return 0;
+    NSScreen *screen = FQIslandScreen(((__bridge NSView *)pointer).window);
+    if (!screen) return 0;
+    CGFloat height = screen.safeAreaInsets.top;
+    NSRect left = screen.auxiliaryTopLeftArea;
+    NSRect right = screen.auxiliaryTopRightArea;
+    CGFloat width = height > 0 && !NSIsEmptyRect(left) && !NSIsEmptyRect(right)
+        ? NSMinX(right) - NSMaxX(left) : 0;
+    values[0] = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+    values[1] = screen.frame.size.width;
+    values[2] = NSMaxY(screen.frame) - NSMinY(screen.visibleFrame);
+    values[3] = fmax(0, width);
+    values[4] = fmax(0, height);
+    // Menu-bar height remains available with auto-hide enabled. visibleFrame
+    // alone can report a zero top inset, or include a Dock positioned at the top.
+    values[5] = NSApp.mainMenu.menuBarHeight > 0
+        ? NSApp.mainMenu.menuBarHeight : NSStatusBar.systemStatusBar.thickness;
+    return 1;
+}
+
+// Island geometry is in global AppKit coordinates; creation converts it to GPUI.
+// Anchor to the physical top edge, including the menu-bar/camera strip.
+static BOOL FQIslandFrame(NSRect screen, NSRect visible, NSSize desired, NSRect *result) {
+    if (!result || !FQFiniteRect(screen) || !FQFiniteRect(visible) ||
+        !isfinite(desired.width) || !isfinite(desired.height) ||
+        desired.width <= 0 || desired.height <= 0) return NO;
+    visible = NSIntersectionRect(screen, visible);
+    if (!FQFiniteRect(visible)) return NO;
+    NSSize size = NSMakeSize(fmin(desired.width, screen.size.width),
+                             fmin(desired.height, NSMaxY(screen) - NSMinY(visible)));
+    *result = NSMakeRect(NSMidX(screen) - size.width / 2,
+                         NSMaxY(screen) - size.height, size.width, size.height);
+    return YES;
+}
+
+int fq_island_bounds(void *pointer, double width, double height, double *bounds) {
+    if (![NSThread isMainThread] || !pointer || !bounds) return 0;
+    NSScreen *screen = FQIslandScreen(((__bridge NSView *)pointer).window);
+    NSRect frame;
+    if (!screen || !FQIslandFrame(screen.frame, screen.visibleFrame, NSMakeSize(width, height), &frame)) return 0;
+    bounds[0] = NSMinX(frame) - NSMinX(screen.frame);
+    bounds[1] = NSMaxY(screen.frame) - NSMaxY(frame);
+    bounds[2] = frame.size.width;
+    bounds[3] = frame.size.height;
+    return 1;
+}
+
+@interface FQIslandState : NSObject
+@property(nonatomic, weak) NSPanel *panel;
+@property(nonatomic) NSSize desired;
+@property(nonatomic) BOOL queued;
+@property(nonatomic) BOOL configured;
+@property(nonatomic) BOOL closed;
+@property(nonatomic, strong) id closeObserver;
+@property(nonatomic, strong) id screenObserver;
+@end
+
+@implementation FQIslandState
+- (void)dealloc {
+    if (_closeObserver) [NSNotificationCenter.defaultCenter removeObserver:_closeObserver];
+    if (_screenObserver) [NSNotificationCenter.defaultCenter removeObserver:_screenObserver];
+}
+@end
+
+static char FQIslandKey;
+static void FQQueueIslandFrame(FQIslandState *state) {
+    if (state.queued || state.closed) return;
+    state.queued = YES;
+    // AppKit geometry synchronously calls GPUI's resize/move callbacks. Enqueue
+    // the native mutation after Rust releases its window borrow; coalesce requests.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        state.queued = NO;
+        NSPanel *panel = state.panel;
+        if (!panel || state.closed) return;
+        @try {
+            if (!state.configured) {
+                // Keep GPUI's NSPanel subclass and the nonactivating bit intact.
+                panel.styleMask = NSWindowStyleMaskNonactivatingPanel;
+                panel.floatingPanel = YES;
+                panel.level = NSMainMenuWindowLevel + 3;
+                panel.hidesOnDeactivate = NO;
+                // GPUIView does not implement needsPanelToBecomeKey. Permit
+                // explicit clicks to make this nonactivating panel key, while
+                // orderFront and hover still leave the current key window alone.
+                panel.becomesKeyOnlyIfNeeded = NO;
+                panel.acceptsMouseMovedEvents = YES;
+                panel.movable = NO;
+                panel.hasShadow = NO;
+                panel.animationBehavior = NSWindowAnimationBehaviorNone;
+                panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                           NSWindowCollectionBehaviorFullScreenAuxiliary;
+                state.configured = YES;
+            }
+            NSScreen *screen = FQIslandScreen(panel);
+            NSRect frame;
+            if (screen && FQIslandFrame(screen.frame, screen.visibleFrame, state.desired, &frame)) {
+                if (!NSEqualRects(panel.frame, frame)) [panel setFrame:frame display:YES];
+            }
+            if (!panel.visible && !state.closed) [panel orderFront:nil];
+        } @catch (NSException *exception) {
+            NSLog(@"Island window configuration failed: %@", exception.reason);
+        }
+    });
+}
+
+int fq_configure_island(void *pointer) {
+    if (![NSThread isMainThread] || !pointer) return 0;
+    NSWindow *window = ((__bridge NSView *)pointer).window;
+    if (![window isKindOfClass:NSPanel.class]) return 0;
+    FQIslandState *state = objc_getAssociatedObject(window, &FQIslandKey);
+    if (!state) {
+        state = [FQIslandState new];
+        state.panel = (NSPanel *)window;
+        state.desired = window.contentView.bounds.size;
+        __weak FQIslandState *weakState = state;
+        state.closeObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification
+            object:window queue:nil usingBlock:^(NSNotification *notification) {
+                (void)notification;
+                weakState.closed = YES;
+            }];
+        state.screenObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
+                (void)notification;
+                FQIslandState *current = weakState;
+                if (current) FQQueueIslandFrame(current);
+            }];
+        objc_setAssociatedObject(window, &FQIslandKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    FQQueueIslandFrame(state);
+    return 1;
+}
+
+int fq_resize_island(void *pointer, double width, double height) {
+    if (![NSThread isMainThread] || !pointer || !isfinite(width) || !isfinite(height) || width <= 0 || height <= 0) return 0;
+    NSWindow *window = ((__bridge NSView *)pointer).window;
+    FQIslandState *state = objc_getAssociatedObject(window, &FQIslandKey);
+    if (!state || state.closed) return 0;
+    state.desired = NSMakeSize(width, height);
+    FQQueueIslandFrame(state);
+    return 1;
+}
+
 #ifdef FQ_MATERIAL_SELF_TEST
 static void require(BOOL condition, NSString *message) {
     if (!condition) {
         fprintf(stderr, "%s\n", message.UTF8String);
         exit(1);
     }
+}
+
+static void FQTestIslandBounds(void) {
+    NSRect screen = NSMakeRect(0, 0, 1440, 900);
+    NSRect visible = NSMakeRect(0, 24, 1440, 852);
+    NSRect compact, expanded;
+    require(FQIslandFrame(screen, visible, NSMakeSize(344, 58), &compact) &&
+            NSEqualRects(compact, NSMakeRect(548, 842, 344, 58)), @"Island compact anchor incorrect");
+    require(FQIslandFrame(screen, visible, NSMakeSize(640, 408), &expanded) &&
+            NSMidX(compact) == NSMidX(expanded) && NSMaxY(compact) == NSMaxY(expanded),
+            @"Island expansion moved its top center");
+    require(FQIslandFrame(NSMakeRect(-1920, 900, 1920, 1080), NSMakeRect(-1920, 900, 1920, 1056),
+                         NSMakeSize(640, 408), &expanded) &&
+            NSEqualRects(expanded, NSMakeRect(-1280, 1572, 640, 408)), @"Island secondary-display anchor incorrect");
+    require(FQIslandFrame(screen, visible, NSMakeSize(2000, 1200), &expanded) &&
+            NSEqualRects(expanded, NSMakeRect(0, 24, 1440, 876)), @"Island exceeded screen or covered the Dock");
+    require(!FQIslandFrame(screen, visible, NSMakeSize(NAN, 58), &expanded) &&
+            !FQIslandFrame(screen, visible, NSMakeSize(344, 0), &expanded) &&
+            !FQIslandFrame(screen, NSZeroRect, NSMakeSize(344, 58), &expanded),
+            @"Invalid Island geometry accepted");
 }
 
 static void FQTestTaskDialogBounds(void) {
@@ -233,6 +442,48 @@ static void FQTestTaskDialogBounds(void) {
             !FQTaskDialogBounds(parent, screen, visible, NSMakeSize(680, 0), &result) &&
             !FQTaskDialogBounds(parent, screen, NSZeroRect, NSMakeSize(680, 600), &result),
             @"Invalid dialog geometry accepted");
+}
+
+static void FQDrainIsland(FQIslandState *state) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (state.queued && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    require(!state.queued, @"Island queued mutation did not finish");
+}
+
+static void FQTestIslandPanel(void) {
+    __weak NSPanel *released;
+    @autoreleasepool {
+        NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(100, 100, 344, 58)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskFullSizeContentView
+            backing:NSBackingStoreBuffered defer:NO];
+        panel.releasedWhenClosed = NO;
+        released = panel;
+        void *view = (__bridge void *)panel.contentView;
+        NSWindow *key = NSApp.keyWindow;
+        require(fq_configure_island(view), @"Island setup rejected panel");
+        FQIslandState *state = objc_getAssociatedObject(panel, &FQIslandKey);
+        require(!state.configured && state.queued, @"Island changed geometry synchronously");
+        FQDrainIsland(state);
+        require(state.configured && !panel.hidesOnDeactivate && !panel.becomesKeyOnlyIfNeeded &&
+                panel.level == NSMainMenuWindowLevel + 3 && panel.styleMask == NSWindowStyleMaskNonactivatingPanel,
+                @"Island native policy incorrect");
+        require(NSApp.keyWindow == key, @"Island setup stole keyboard focus");
+        NSRect before = panel.frame;
+        require(fq_resize_island(view, 640, 408) && fq_resize_island(view, 420, 160), @"Island resize failed");
+        require(NSEqualRects(panel.frame, before), @"Island resized inside borrowed window callback");
+        FQDrainIsland(state);
+        require(panel.frame.size.width == 420 && panel.frame.size.height == 160 &&
+                NSMidX(panel.frame) == NSMidX(before) && NSMaxY(panel.frame) == NSMaxY(before),
+                @"Island failed to coalesce resize or lost anchor");
+        require(!fq_resize_island(view, NAN, 100) && !fq_resize_island(view, 100, 0), @"Island accepted invalid resize");
+        require(fq_resize_island(view, 344, 58), @"Island final resize failed");
+        [panel close];
+        FQDrainIsland(state);
+        require(state.closed && !panel.visible && !fq_resize_island(view, 640, 408), @"Closed Island was reopened by queued work");
+    }
+    require(!released, @"Island panel leaked");
 }
 
 static CGError FQRejectedBlur(int32_t connection, uint32_t window, int radius) {
@@ -345,8 +596,10 @@ static void FQTestMaterial(NSWindow *window) {
 int main(void) {
     @autoreleasepool {
         FQTestTaskDialogBounds();
+        FQTestIslandBounds();
         [NSApplication sharedApplication];
         NSUInteger baseline = NSApp.windows.count;
+        FQTestIslandPanel();
         __weak NSWindow *releasedWindow;
         @autoreleasepool {
             NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 480)
@@ -362,7 +615,7 @@ int main(void) {
         require(!releasedWindow, @"Test window leaked");
         require(NSApp.windows.count == baseline, @"Test left an application window behind");
         puts("Native material: legacy lifecycle, theme, resize, layering; real CGS radii 0/12/48/64; "
-             "clear, clamp, invalid inputs, API failures, window release and task-dialog geometry passed");
+             "clear, clamp, invalid inputs, API failures, window release, task-dialog geometry; Island nonactivation, resize coalescing, close lifecycle and geometry passed");
     }
 }
 #endif

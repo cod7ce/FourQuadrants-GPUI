@@ -199,6 +199,7 @@ jobs:
           cargo clippy --locked --all-targets --manifest-path Cargo.toml
           bash scripts/build-native.sh
           target/native/four-quadrants-helper self-test
+          bash scripts/test-material.sh
           bash scripts/test-updater.sh
           bash scripts/test-completion-sound.sh
           swift scripts/update-key.swift self-test
