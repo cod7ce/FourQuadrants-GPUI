@@ -478,7 +478,7 @@ impl Island {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let doc = &owner.doc;
-        let link_active = owner.task_link_active(task, window, cx);
+        let (title_text, styled_title) = owner.task_title_with_text(task, p.accent, window, cx);
         let id = task.id.clone();
         let done = id.clone();
         let active = self.selected.as_ref() == Some(&id);
@@ -493,9 +493,9 @@ impl Island {
         let tooltip_visible = self
             .title_overflow
             .get(&task.id)
-            .is_some_and(|(title, truncated)| title == &task.title && *truncated);
-        let tooltip_title = task.title.clone();
-        let measured_title = task.title.clone();
+            .is_some_and(|(title, truncated)| title == &title_text && *truncated);
+        let tooltip_title = title_text.clone();
+        let measured_title = title_text;
         let measured_id = task.id.clone();
         let measured_view = cx.weak_entity();
         div()
@@ -622,13 +622,12 @@ impl Island {
                     })
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(px(TITLE_FONT_SIZE))
                             .line_height(px(18.))
                             .overflow_hidden()
-                            .line_clamp(2)
+                            .line_clamp(TITLE_MAX_LINES)
                             .text_ellipsis()
-                            .when(link_active, |el| el.text_color(p.accent).underline())
-                            .child(task.title.clone()),
+                            .child(styled_title),
                     )
                     .when_some(parent, |el, parent| {
                         el.child(

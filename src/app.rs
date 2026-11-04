@@ -1513,6 +1513,17 @@ impl Workspace {
     }
 
     fn task_title(&self, task: &Task, window: &Window, cx: &App) -> StyledText {
+        self.task_title_with_text(task, self.palette(window).accent, window, cx)
+            .1
+    }
+
+    fn task_title_with_text(
+        &self,
+        task: &Task,
+        accent: Hsla,
+        window: &Window,
+        cx: &App,
+    ) -> (String, StyledText) {
         let mut text = String::new();
         let mut highlights = Vec::new();
         for tag_id in &task.tags {
@@ -1540,7 +1551,7 @@ impl Workspace {
             highlights.push((
                 title_start..text.len(),
                 HighlightStyle {
-                    color: link_active.then(|| self.palette(window).accent),
+                    color: link_active.then_some(accent),
                     underline: link_active.then_some(UnderlineStyle {
                         thickness: px(1.),
                         color: None,
@@ -1554,7 +1565,8 @@ impl Workspace {
                 },
             ));
         }
-        StyledText::new(text).with_highlights(highlights)
+        let styled = StyledText::new(text.clone()).with_highlights(highlights);
+        (text, styled)
     }
 
     fn completion_metadata(&self, task: &Task, p: Palette, window: &Window) -> Option<Div> {
