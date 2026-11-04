@@ -195,6 +195,8 @@ struct Island {
     celebration: bool,
     celebration_task: Option<gpui::Task<()>>,
     mascot_generation: u64,
+    juggle_generation: Option<u64>,
+    _idle_task: gpui::Task<()>,
     counter_generation: u64,
     last_count: usize,
     title_overflow: HashMap<String, (String, bool)>,
@@ -220,6 +222,7 @@ impl Island {
                 this.last_count = ids.len();
                 this.counter_generation = this.counter_generation.wrapping_add(1);
                 this.mascot_generation = this.mascot_generation.wrapping_add(1);
+                this.juggle_generation = None;
             }
             reconcile_selection(&ids, &mut this.selected, this.selected_index);
             this.selected_index = ids
@@ -237,6 +240,34 @@ impl Island {
         let selected = island_tasks(&workspace.read(cx).doc)
             .first()
             .map(|task| task.id.clone());
+        // Sleep between brief juggling sequences; retaining the task here cancels it when
+        // the Island closes. The completed pose does not request more frames.
+        let idle_task = cx.spawn_in(window, async move |this, cx| {
+            let mut interval = [18, 26, 22].into_iter().cycle();
+            loop {
+                cx.background_executor()
+                    .timer(TimeDuration::from_secs(interval.next().unwrap()))
+                    .await;
+                if this
+                    .update_in(cx, |this, _, cx| {
+                        if this.hovered
+                            || this.expanded
+                            || this.morph.is_some()
+                            || this.celebration
+                            || crate::native::reduce_motion()
+                        {
+                            return;
+                        }
+                        this.mascot_generation = this.mascot_generation.wrapping_add(1);
+                        this.juggle_generation = Some(this.mascot_generation);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
             workspace: workspace.downgrade(),
             selected,
@@ -250,6 +281,8 @@ impl Island {
             celebration: false,
             celebration_task: None,
             mascot_generation: 0,
+            juggle_generation: None,
+            _idle_task: idle_task,
             counter_generation: 0,
             last_count: island_tasks(&workspace.read(cx).doc).len(),
             title_overflow: HashMap::new(),
@@ -343,6 +376,9 @@ impl Island {
         }
         let from = self.progress();
         self.expanded = expanded;
+        if expanded {
+            self.juggle_generation = None;
+        }
         self.resize_task = None;
         let motion = !crate::native::reduce_motion();
         self.morph = motion.then_some(Morph {
@@ -395,6 +431,7 @@ impl Island {
         }
         self.hovered = hovered;
         if hovered {
+            self.juggle_generation = None;
             self.mascot_generation = self.mascot_generation.wrapping_add(1);
             cx.notify();
         }
@@ -452,6 +489,7 @@ impl Island {
         });
         if matches!(result, Ok(true)) {
             self.celebration = true;
+            self.juggle_generation = None;
             self.mascot_generation = self.mascot_generation.wrapping_add(1);
             self.counter_generation = self.counter_generation.wrapping_add(1);
             self.celebration_task = Some(cx.spawn(async move |this, cx| {
@@ -740,6 +778,7 @@ impl Render for Island {
                         count == 0,
                         self.celebration,
                         self.mascot_generation,
+                        self.juggle_generation,
                         motion,
                         p,
                     )),
