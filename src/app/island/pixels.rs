@@ -2,6 +2,8 @@ use super::*;
 
 const REACTION: TimeDuration = TimeDuration::from_millis(640);
 pub(super) const JUGGLE_DURATION: TimeDuration = TimeDuration::from_millis(2400);
+const CAP_SLOT_WIDTH: f32 = 36.;
+const CAP_OUTER_INSET: f32 = 3.;
 
 // Original monochrome mascot, with a separate app-icon ball at its feet.
 // Each cell is snapped to the physical pixel grid to keep Retina edges crisp.
@@ -111,7 +113,10 @@ fn sprite(
                 2 | 3 => 2.,
                 _ => 0.,
             };
-            let origin = point(bounds.left() + px(3.), bounds.top() + px(3. - hop));
+            let origin = point(
+                bounds.left() + px(CAP_OUTER_INSET),
+                bounds.top() + px(3. - hop),
+            );
             let playing = juggle.is_some_and(|progress| progress < 1.);
             let opacity = if empty && !celebrating && !playing {
                 0.6
@@ -198,7 +203,7 @@ fn sprite(
             }
         },
     )
-    .w(px(36.))
+    .w(px(CAP_SLOT_WIDTH))
     .h(px(24.))
 }
 
@@ -210,7 +215,7 @@ pub(super) fn mascot(
     motion: bool,
     p: Palette,
 ) -> AnyElement {
-    let view = div().w(px(36.)).h(px(24.)).flex_shrink_0();
+    let view = div().w(px(CAP_SLOT_WIDTH)).h(px(24.)).flex_shrink_0();
     if let Some(juggle_generation) = juggle_generation.filter(|_| motion) {
         view.with_animation(
             ("island-pixel-juggle", juggle_generation),
@@ -264,8 +269,9 @@ fn digits(text: String, progress: f32, color: Hsla) -> impl IntoElement {
         move |bounds, (), window, _| {
             let width = text.len() as f32 * 8. - 2.;
             let lift = if progress < 0.5 { 1. } else { 0. };
+            // Mirror the mascot's visible left edge, including for wider counts.
             let origin = point(
-                bounds.center().x - px(width / 2.),
+                bounds.right() - px(CAP_OUTER_INSET + width),
                 bounds.center().y - px(5. + lift),
             );
             for (index, character) in text.bytes().enumerate() {
@@ -279,7 +285,7 @@ fn digits(text: String, progress: f32, color: Hsla) -> impl IntoElement {
             }
         },
     )
-    .w(px(30.))
+    .w(px(CAP_SLOT_WIDTH))
     .h(px(20.))
 }
 
@@ -300,7 +306,7 @@ pub(super) fn counter(
     } else {
         p.text
     };
-    let view = div().w(px(30.)).h(px(20.)).flex_shrink_0();
+    let view = div().w(px(CAP_SLOT_WIDTH)).h(px(20.)).flex_shrink_0();
     if motion && generation > 0 {
         view.with_animation(
             ("island-pixel-counter", generation),

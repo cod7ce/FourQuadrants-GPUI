@@ -250,7 +250,70 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{Confetti, Document, PARTICLE_COUNT, Task, particle_frame};
+    use crate::app::island::island_tasks;
     use gpui::{point, px};
+
+    #[test]
+    fn island_rows_remain_until_their_own_completion_feedback_ends() {
+        let mut doc = Document::default();
+        for (index, id) in ["first", "second", "third"].into_iter().enumerate() {
+            doc.tasks.push(Task {
+                id: id.into(),
+                sort_order: index as f64,
+                ..Task::default()
+            });
+            doc.pinned_task_ids.insert(id.into());
+        }
+        let mut confetti = Confetti::default();
+        let ids = |doc: &Document, confetti: &Confetti| {
+            island_tasks(doc, confetti)
+                .iter()
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>()
+        };
+        doc.toggle_complete("first");
+        confetti.settle("first".into(), 1, true);
+        assert!(!doc.pinned_task_ids.contains("first"));
+        assert_eq!(ids(&doc, &confetti), ["first", "second", "third"]);
+        let visible = island_tasks(&doc, &confetti);
+        assert!(visible[0].completed);
+        assert_eq!(visible.iter().filter(|task| !task.completed).count(), 2);
+
+        doc.toggle_complete("second");
+        confetti.settle("second".into(), 2, true);
+        assert_eq!(ids(&doc, &confetti), ["first", "second", "third"]);
+        confetti.clear("first", 1);
+        assert_eq!(ids(&doc, &confetti), ["second", "third"]);
+        confetti.clear("second", 2);
+        assert_eq!(ids(&doc, &confetti), ["third"]);
+
+        doc.toggle_complete("third");
+        confetti.settle("third".into(), 3, true);
+        assert_eq!(island_tasks(&doc, &confetti).len(), 1);
+        confetti.clear("third", 3);
+        assert!(island_tasks(&doc, &confetti).is_empty());
+    }
+
+    #[test]
+    fn island_never_retains_rows_without_feedback_or_after_deletion() {
+        let mut doc = Document::default();
+        doc.tasks.push(Task {
+            id: "task".into(),
+            ..Task::default()
+        });
+        doc.pinned_task_ids.insert("task".into());
+        let mut confetti = Confetti::default();
+        assert_eq!(island_tasks(&doc, &confetti).len(), 1);
+        doc.toggle_complete("task");
+        // Disabled confetti or reduced motion never creates a settling entry.
+        assert!(island_tasks(&doc, &confetti).is_empty());
+        confetti.settle("task".into(), 1, true);
+        assert_eq!(island_tasks(&doc, &confetti).len(), 1);
+        doc.delete_task("task");
+        assert!(island_tasks(&doc, &confetti).is_empty());
+        confetti.retain_completed(&doc);
+        assert!(confetti.settling.is_empty());
+    }
 
     #[test]
     fn checked_tasks_stay_in_place_until_their_own_feedback_ends() {

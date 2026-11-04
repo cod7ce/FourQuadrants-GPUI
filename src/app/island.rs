@@ -22,11 +22,13 @@ fn preview_expanded() -> bool {
 }
 
 /// Pins are global choices, independent of the main window's current filters.
-fn island_tasks(doc: &Document) -> Vec<&Task> {
+pub(super) fn island_tasks<'a>(doc: &'a Document, feedback: &confetti::Confetti) -> Vec<&'a Task> {
     let mut tasks: Vec<_> = doc
         .tasks
         .iter()
-        .filter(|task| !task.completed && doc.pinned_task_ids.contains(&task.id))
+        .filter(|task| {
+            (!task.completed && doc.pinned_task_ids.contains(&task.id)) || feedback.holds_pin(task)
+        })
         .collect();
     tasks.sort_by(|a, b| {
         a.sort_order
@@ -99,7 +101,7 @@ impl Layout {
         let compact_width = (camera_width + 112.).min(display.width);
         let expanded_width = 440_f32.max(compact_width + 48.).min(display.width);
         // Header and list live entirely below the camera exclusion zone.
-        let body_height = 36. + ROW_HEIGHT * count.clamp(2, MAX_ROWS) as f32 + 8.;
+        let body_height = 36. + ROW_HEIGHT * count.clamp(1, MAX_ROWS) as f32 + 8.;
         Self {
             compact: size(px(compact_width), px(cap_height)),
             expanded: size(
@@ -214,12 +216,12 @@ impl Island {
         cx: &mut Context<Self>,
     ) -> Self {
         let observed = cx.observe_in(workspace, window, |this, workspace, window, cx| {
-            let ids: Vec<_> = island_tasks(&workspace.read(cx).doc)
-                .iter()
-                .map(|task| task.id.clone())
-                .collect();
-            if ids.len() != this.last_count {
-                this.last_count = ids.len();
+            let owner = workspace.read(cx);
+            let tasks = island_tasks(&owner.doc, &owner.confetti);
+            let count = tasks.iter().filter(|task| !task.completed).count();
+            let ids: Vec<_> = tasks.iter().map(|task| task.id.clone()).collect();
+            if count != this.last_count {
+                this.last_count = count;
                 this.counter_generation = this.counter_generation.wrapping_add(1);
                 this.mascot_generation = this.mascot_generation.wrapping_add(1);
                 this.juggle_generation = None;
@@ -237,7 +239,7 @@ impl Island {
         let bounds = cx.observe_window_bounds(window, |this, window, cx| {
             this.refresh_layout(window, cx);
         });
-        let selected = island_tasks(&workspace.read(cx).doc)
+        let selected = island_tasks(&workspace.read(cx).doc, &workspace.read(cx).confetti)
             .first()
             .map(|task| task.id.clone());
         // Sleep between brief juggling sequences; retaining the task here cancels it when
@@ -284,7 +286,10 @@ impl Island {
             juggle_generation: None,
             _idle_task: idle_task,
             counter_generation: 0,
-            last_count: island_tasks(&workspace.read(cx).doc).len(),
+            last_count: island_tasks(&workspace.read(cx).doc, &workspace.read(cx).confetti)
+                .iter()
+                .filter(|task| !task.completed)
+                .count(),
             title_overflow: HashMap::new(),
             native_error: None,
             focus: cx.focus_handle(),
@@ -347,7 +352,10 @@ impl Island {
         let Ok(display) = crate::native::island_display(window) else {
             return;
         };
-        let next = Layout::new(display, island_tasks(&workspace.read(cx).doc).len());
+        let next = Layout::new(
+            display,
+            island_tasks(&workspace.read(cx).doc, &workspace.read(cx).confetti).len(),
+        );
         if next != self.layout {
             self.layout = next;
             self.resize_native(
@@ -484,8 +492,11 @@ impl Island {
     ) {
         let result = self.workspace.update(cx, |workspace, cx| {
             let was_open = workspace.doc.task(id).is_some_and(|task| !task.completed);
+            if !was_open {
+                return false;
+            }
             workspace.toggle_task_complete(id, event, window, cx);
-            was_open && workspace.doc.task(id).is_some_and(|task| task.completed)
+            workspace.doc.task(id).is_some_and(|task| task.completed)
         });
         if matches!(result, Ok(true)) {
             self.celebration = true;
@@ -521,6 +532,7 @@ impl Island {
         let done = id.clone();
         let active = self.selected.as_ref() == Some(&id);
         let color = p.quadrant[task.quadrant()];
+        let completed = task.completed;
         let en = doc.settings.language == "en";
         let parent = task.parent_id.as_deref().and_then(|id| doc.task(id));
         let due = task.due_date.map(|date| {
@@ -580,10 +592,24 @@ impl Island {
                             .size(px(15.))
                             .rounded_full()
                             .border_1()
-                            .border_color(color),
+                            .border_color(color)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(completed, |el| {
+                                el.bg(color)
+                                    .text_color(p.bg)
+                                    .child(glyph(IconName::Check).with_size(px(11.)))
+                            }),
                     )
                     .tooltip(move |window, cx| {
-                        Tooltip::new(if en { "Complete" } else { "完成" }).build(window, cx)
+                        Tooltip::new(match (en, completed) {
+                            (true, true) => "Completed",
+                            (true, false) => "Complete",
+                            (false, true) => "已完成",
+                            (false, false) => "完成",
+                        })
+                        .build(window, cx)
                     })
                     .on_click(cx.listener(move |this, event, window, cx| {
                         cx.stop_propagation();
@@ -706,8 +732,8 @@ impl Render for Island {
         let p = island_palette(&doc.settings);
         let en = doc.settings.language == "en";
         let tr = |zh: &'static str, english: &'static str| if en { english } else { zh };
-        let tasks = island_tasks(doc);
-        let count = tasks.len();
+        let tasks = island_tasks(doc, &owner.confetti);
+        let count = tasks.iter().filter(|task| !task.completed).count();
         let motion = !crate::native::reduce_motion();
         let progress = self.progress();
         if self.morph.is_some() {
@@ -835,10 +861,10 @@ impl Render for Island {
                         .enumerate()
                         .map(|(index, task)| self.row(task, index, owner, p, window, cx)),
                 )
-                .when(count == 0, |el| {
+                .when(tasks.is_empty(), |el| {
                     el.child(
                         div()
-                            .h(px(ROW_HEIGHT * 2.))
+                            .h(px(ROW_HEIGHT))
                             .flex()
                             .flex_col()
                             .items_center()
@@ -946,7 +972,8 @@ impl Render for Island {
                     "escape" => this.set_expanded(false, window, cx),
                     "down" | "up" => {
                         if let Some(workspace) = this.workspace.upgrade() {
-                            let tasks = island_tasks(&workspace.read(cx).doc);
+                            let tasks =
+                                island_tasks(&workspace.read(cx).doc, &workspace.read(cx).confetti);
                             if !tasks.is_empty() {
                                 let index = if event.keystroke.key == "down" {
                                     (this.selected_index + 1) % tasks.len()
@@ -1010,7 +1037,7 @@ impl Workspace {
                 return;
             }
             let main = workspace.read(cx).main_window;
-            let count = island_tasks(&workspace.read(cx).doc).len();
+            let count = island_tasks(&workspace.read(cx).doc, &workspace.read(cx).confetti).len();
             let placement = main
                 .update(cx, |_, window, cx| {
                     let display = crate::native::island_display(window)?;
@@ -1090,7 +1117,10 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, Layout, MORPH, Morph, Task, island_tasks, model, reconcile_selection};
+    use super::{
+        Document, Layout, MAX_ROWS, MORPH, Morph, ROW_HEIGHT, Task, island_tasks, model,
+        reconcile_selection,
+    };
     use crate::native::IslandDisplay;
     use chrono::Duration;
     use gpui::{px, size};
@@ -1120,7 +1150,7 @@ mod tests {
         );
         assert_eq!(
             Layout::new(display(true), 0).expanded,
-            Layout::new(display(true), 2).expanded
+            Layout::new(display(true), 1).expanded
         );
         let virtual_island = Layout::new(display(false), 3);
         assert_eq!(virtual_island.compact, size(px(184.), px(24.)));
@@ -1148,6 +1178,29 @@ mod tests {
     }
 
     #[test]
+    fn expanded_height_shrinks_to_one_row_as_pinned_tasks_disappear() {
+        for notched in [false, true] {
+            let screen = display(notched);
+            for count in (2..=MAX_ROWS).rev() {
+                let before = Layout::new(screen, count);
+                let after = Layout::new(screen, count - 1);
+                assert_eq!(
+                    before.expanded.height - after.expanded.height,
+                    px(ROW_HEIGHT)
+                );
+                assert_eq!(before.expanded.width, after.expanded.width);
+                assert_eq!(before.compact, after.compact);
+            }
+            let single = Layout::new(screen, 1);
+            assert_eq!(
+                single.expanded.height,
+                single.cap_height + px(36. + ROW_HEIGHT + 8.)
+            );
+            assert_eq!(Layout::new(screen, 0).expanded, single.expanded);
+        }
+    }
+
+    #[test]
     fn pins_cross_weeks_and_filters_but_exclude_completed_tasks() {
         let mut doc = Document::default();
         for (id, completed, order) in [
@@ -1167,14 +1220,17 @@ mod tests {
         doc.pinned_task_ids = ["later", "first", "done"].map(String::from).into();
         doc.settings.hide_completed = true;
         assert_eq!(
-            island_tasks(&doc)
+            island_tasks(&doc, &super::confetti::Confetti::default())
                 .iter()
                 .map(|task| task.id.as_str())
                 .collect::<Vec<_>>(),
             ["first", "later"]
         );
         doc.toggle_complete("first");
-        assert_eq!(island_tasks(&doc)[0].id, "later");
+        assert_eq!(
+            island_tasks(&doc, &super::confetti::Confetti::default())[0].id,
+            "later"
+        );
     }
 
     #[test]
