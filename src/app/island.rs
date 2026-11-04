@@ -1,12 +1,17 @@
 use super::*;
 use gpui_component::Root;
-use std::time::{Duration as TimeDuration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration as TimeDuration, Instant},
+};
 
 mod pixels;
 
 const MORPH: TimeDuration = TimeDuration::from_millis(300);
-const ROW_HEIGHT: f32 = 48.;
+const ROW_HEIGHT: f32 = 56.;
 const MAX_ROWS: usize = 5;
+const TITLE_FONT_SIZE: f32 = 13.;
+const TITLE_MAX_LINES: usize = 2;
 /// The virtual island sits above the menu bar's lower edge on notchless screens.
 const VIRTUAL_CAP_HEIGHT: f32 = 26.;
 
@@ -38,6 +43,35 @@ fn reconcile_selection(ids: &[String], selected: &mut Option<String>, previous_i
             .get(previous_index.min(ids.len().saturating_sub(1)))
             .cloned();
     }
+}
+
+fn title_needs_tooltip(
+    title: &str,
+    width: Pixels,
+    text_style: &TextStyle,
+    text_system: &WindowTextSystem,
+) -> bool {
+    if title.is_empty() || width <= px(0.) {
+        return false;
+    }
+
+    let font_size = px(TITLE_FONT_SIZE);
+    let run = text_style.to_run(title.len());
+    let Ok(lines) = text_system.shape_text(
+        title.to_owned().into(),
+        font_size,
+        &[run],
+        Some(width),
+        None,
+    ) else {
+        return false;
+    };
+
+    lines
+        .iter()
+        .map(|line| line.wrap_boundaries().len() + 1)
+        .sum::<usize>()
+        > TITLE_MAX_LINES
 }
 
 /// All dimensions are logical points. The camera strip stays empty in both states.
@@ -163,6 +197,7 @@ struct Island {
     mascot_generation: u64,
     counter_generation: u64,
     last_count: usize,
+    title_overflow: HashMap<String, (String, bool)>,
     native_error: Option<String>,
     focus: FocusHandle,
     list_scroll: ScrollHandle,
@@ -217,6 +252,7 @@ impl Island {
             mascot_generation: 0,
             counter_generation: 0,
             last_count: island_tasks(&workspace.read(cx).doc).len(),
+            title_overflow: HashMap::new(),
             native_error: None,
             focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
@@ -445,7 +481,6 @@ impl Island {
         let link_active = owner.task_link_active(task, window, cx);
         let id = task.id.clone();
         let done = id.clone();
-        let unpin = id.clone();
         let active = self.selected.as_ref() == Some(&id);
         let color = p.quadrant[task.quadrant()];
         let en = doc.settings.language == "en";
@@ -455,6 +490,14 @@ impl Island {
                 .format("%m/%d")
                 .to_string()
         });
+        let tooltip_visible = self
+            .title_overflow
+            .get(&task.id)
+            .is_some_and(|(title, truncated)| title == &task.title && *truncated);
+        let tooltip_title = task.title.clone();
+        let measured_title = task.title.clone();
+        let measured_id = task.id.clone();
+        let measured_view = cx.weak_entity();
         div()
             .id(SharedString::from(format!("island-row-{id}")))
             .h(px(ROW_HEIGHT))
@@ -511,17 +554,78 @@ impl Island {
             )
             .child(
                 div()
+                    .on_children_prepainted(move |children, window, cx| {
+                        let Some(title_bounds) = children.first() else {
+                            return;
+                        };
+                        let mut text_style = window.text_style();
+                        text_style.font_size = px(TITLE_FONT_SIZE).into();
+                        text_style.white_space = WhiteSpace::Normal;
+                        text_style.line_clamp = None;
+                        text_style.text_overflow = None;
+                        let truncated = title_needs_tooltip(
+                            &measured_title,
+                            title_bounds.size.width,
+                            &text_style,
+                            window.text_system(),
+                        );
+                        let unchanged = measured_view
+                            .read_with(cx, |this, _| {
+                                matches!(
+                                    this.title_overflow.get(&measured_id),
+                                    Some((title, current)) if title == &measured_title && *current == truncated
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !unchanged {
+                            let measured_view = measured_view.clone();
+                            let measured_id = measured_id.clone();
+                            let measured_title = measured_title.clone();
+                            cx.defer(move |cx| {
+                                let _ = measured_view.update(cx, |this, cx| {
+                                    let unchanged = matches!(
+                                        this.title_overflow.get(&measured_id),
+                                        Some((title, current)) if title == &measured_title && *current == truncated
+                                    );
+                                    if !unchanged {
+                                        this.title_overflow.insert(
+                                            measured_id,
+                                            (measured_title, truncated),
+                                        );
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        }
+                    })
+                    .id(SharedString::from(format!("island-title-{}", task.id)))
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
                     .gap(px(2.))
+                    .when(tooltip_visible, |el| {
+                        el.tooltip(move |window, cx| {
+                            let title = tooltip_title.clone();
+                            // Include the tooltip's padding, border and outer margins.
+                            let max_width = (window.viewport_size().width - px(48.))
+                                .max(px(1.))
+                                .min(px(420.));
+                            Tooltip::element(move |_, _| {
+                                div()
+                                    .max_w(max_width)
+                                    .whitespace_normal()
+                                    .child(title.clone())
+                            })
+                            .build(window, cx)
+                        })
+                    })
                     .child(
                         div()
                             .text_size(px(13.))
                             .line_height(px(18.))
                             .overflow_hidden()
-                            .whitespace_nowrap()
+                            .line_clamp(2)
                             .text_ellipsis()
                             .when(link_active, |el| el.text_color(p.accent).underline())
                             .child(task.title.clone()),
@@ -552,23 +656,6 @@ impl Island {
                         .child(due),
                 )
             })
-            .child(
-                icon_button(
-                    SharedString::from(format!("island-unpin-{}", task.id)),
-                    PinIcon,
-                    if en { "Unpin" } else { "取消 Pin" },
-                    p,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    let _ = this.workspace.update(cx, |workspace, cx| {
-                        workspace.change(cx, |doc| {
-                            doc.pinned_task_ids.remove(&unpin);
-                            Ok(())
-                        })
-                    });
-                })),
-            )
     }
 }
 
@@ -988,7 +1075,7 @@ mod tests {
         assert_eq!(layout.camera_width, px(188.));
         assert_eq!(layout.cap_height, px(37.));
         assert_eq!(layout.compact, size(px(300.), px(37.)));
-        assert_eq!(layout.expanded, size(px(440.), px(225.)));
+        assert_eq!(layout.expanded, size(px(440.), px(249.)));
         assert_eq!(
             Layout::new(display(true), 100).expanded,
             Layout::new(display(true), 5).expanded

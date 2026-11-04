@@ -151,7 +151,7 @@ impl TaskEditor {
         };
         let mut this = Self {
             id: task.id.clone(),
-            title: field(title_value, task.title.clone(), true, window, cx),
+            title: auto_grow_field(title_value, task.title.clone(), 2, 6, window, cx),
             issue: field(
                 task.issue_key.clone().unwrap_or_default(),
                 theme::tr(settings, "工单编号", "Issue key"),
@@ -715,7 +715,7 @@ impl Workspace {
                         Input::new(&editor.title)
                             .appearance(false)
                             .px(px(0.))
-                            .h(px(58.))
+                            .min_h(px(58.))
                             .text_size(px(20.)),
                     )
                     .child(

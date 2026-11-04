@@ -225,6 +225,22 @@ pub fn field(
     })
 }
 
+pub fn auto_grow_field(
+    value: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    min_rows: usize,
+    max_rows: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .default_value(value)
+            .auto_grow(min_rows, max_rows)
+    })
+}
+
 pub fn text_input(state: &Entity<InputState>) -> Input {
     Input::new(state).min_h(px(32.))
 }
