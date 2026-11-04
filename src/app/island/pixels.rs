@@ -20,7 +20,7 @@ const SPRITE: [u16; 9] = [
 const ICON_COLORS: [u32; 4] = [0xff3b30, 0x007aff, 0xff9500, 0x8e8e93];
 // A muted light gray reads as the icon's white backing without becoming the
 // brightest element in the compact Island.
-const BALL_LIGHT: u32 = 0xc7c7cc;
+const BALL_LIGHT: u32 = 0xe5e5e5;
 // White-backed pixel ball with an icon-colored core and white cross.
 const BALL: [u16; 7] = [
     0b0111110, 0b1111111, 0b1111111, 0b1111111, 0b1111111, 0b1111111, 0b0111110,
