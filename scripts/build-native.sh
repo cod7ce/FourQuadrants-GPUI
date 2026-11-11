@@ -37,8 +37,8 @@ xcrun swiftc -parse-as-library -swift-version 6 -O \
 cp "$ROOT/native/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Contents/Info.plist"
 if [[ "$#" -eq 1 ]]; then
-  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Four Quadrants Notification Test' "$APP/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Set :CFBundleName Four Quadrants Notification Test' "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName ONES Notification Test' "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleName ONES Notification Test' "$APP/Contents/Info.plist"
 fi
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$OUT/four-quadrants-helper" "$APP/Contents/MacOS/four-quadrants-helper"

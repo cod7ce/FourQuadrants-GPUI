@@ -2,7 +2,7 @@
 
 Local commands build and verify files under `dist/` without uploading them. The GitHub Actions workflow publishes version tags after validation. Release archives are Apple Silicon (`arm64`) only. Run local commands from this repository on an Apple Silicon Mac with Xcode command-line tools, Rust, Python 3, and `curl` available.
 
-`Cargo.toml` is the version source of truth. Both `CFBundleShortVersionString` and `CFBundleVersion` in `native/AppInfo.plist` must equal its `0.x.x` version, currently `0.21.4`. Packaging rejects mismatches.
+`Cargo.toml` is the version source of truth. Both `CFBundleShortVersionString` and `CFBundleVersion` in `native/AppInfo.plist` must equal its `0.x.x` version, currently `0.21.5`. Packaging rejects mismatches.
 
 ## Fetch the pinned Sparkle SDK
 
@@ -45,7 +45,7 @@ A local bundle can be built without `SUPublicEDKey`; release packaging refuses t
 bash scripts/bundle.sh release
 ```
 
-For a development bundle, use `bash scripts/bundle.sh debug`. The result is `dist/FourQuadrants GPUI.app`.
+For a development bundle, use `bash scripts/bundle.sh debug`. The result is `dist/肆 · ONES.app`.
 
 The bundle sets `MACOSX_DEPLOYMENT_TARGET=14.0` for Rust and Objective-C compilation; the Swift helper uses the same minimum. It embeds `Sparkle.framework` with `ditto`, preserving its version and resource symlinks. It thins the copied framework and all other Mach-O files to the main executable's architecture, signs executable files first, then nested `.app`, `.xpc`, and `.framework` bundles from the inside out. The final bundle passes `codesign --verify --deep --strict` before replacing the previous local bundle.
 
@@ -56,20 +56,20 @@ Code signing defaults to **ad hoc** (`-`). An available local identity can be se
 Supply the intended HTTPS **archive directory** as `BASE_URL`. It is used to construct the enclosure URL, not contacted or uploaded to:
 
 ```sh
-bash scripts/package-release.sh 'https://downloads.example.com/fourquadrants/0.21.4'
+bash scripts/package-release.sh 'https://downloads.example.com/fourquadrants/0.21.5'
 ```
 
 To package a bundle you have already built:
 
 ```sh
-bash scripts/package-release.sh 'https://downloads.example.com/fourquadrants/0.21.4' --skip-build
+bash scripts/package-release.sh 'https://downloads.example.com/fourquadrants/0.21.5' --skip-build
 ```
 
 `--skip-build` still checks the source and bundled plist versions, exact public key and feed agreement, minimum macOS version, bundle signature, Sparkle framework presence, and every Mach-O architecture. Use it only with the intended release bundle. A missing source public key is rejected before the build starts.
 
-The script creates these files under `dist/releases/0.21.4/`:
+The script creates these files under `dist/releases/0.21.5/`:
 
-- `FourQuadrants-GPUI-0.21.4-arm64.zip`, a `ditto` archive containing the complete `.app` bundle.
+- `FourQuadrants-GPUI-0.21.5-arm64.zip`, a `ditto` archive containing the complete `.app` bundle.
 - `appcast.xml`, with a signed enclosure, the archive length, version strings, minimum macOS version, and an `arm64` hardware requirement.
 - `SHA256SUMS`, containing the archive's SHA256 digest.
 
@@ -95,7 +95,7 @@ Update `Cargo.toml`, the root package version in `Cargo.lock`, and both app vers
 The workflow can also be dispatched with an existing tag. If that version is already published, it downloads the three assets, checks their hash, metadata and Ed25519 signature, then skips building and uploading. It never overwrites an existing release. A checksum check alone does not replace signature verification.
 
 ```sh
-gh workflow run release.yml --repo cod7ce/FourQuadrants-GPUI --ref main -f tag=v0.21.4
+gh workflow run release.yml --repo cod7ce/FourQuadrants-GPUI --ref main -f tag=v0.21.5
 ```
 
 ## Local checks
@@ -104,8 +104,8 @@ gh workflow run release.yml --repo cod7ce/FourQuadrants-GPUI --ref main -f tag=v
 bash -n scripts/fetch-sparkle.sh scripts/bundle.sh scripts/package-release.sh
 bash scripts/test-updater.sh
 swift scripts/update-key.swift self-test
-codesign --verify --deep --strict 'dist/FourQuadrants GPUI.app'
-(cd dist/releases/0.21.4 && shasum -a 256 -c SHA256SUMS)
+codesign --verify --deep --strict 'dist/肆 · ONES.app'
+(cd dist/releases/0.21.5 && shasum -a 256 -c SHA256SUMS)
 ```
 
 Use a `--data target/...` store for any app launch used to validate packaging. Do not test against the original SwiftUI source or its data. Build products, SDKs, archives, checksums, and appcasts stay in ignored `target/` or `dist/` directories.

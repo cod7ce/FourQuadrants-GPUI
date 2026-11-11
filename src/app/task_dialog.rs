@@ -295,7 +295,7 @@ impl Workspace {
                     display_id,
                     kind: WindowKind::PopUp,
                     titlebar: Some(TitlebarOptions {
-                        title: Some("任务详情 · FourQuadrants".into()),
+                        title: Some("任务详情 · 肆 · ONES".into()),
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(16.), px(12.))),
                     }),

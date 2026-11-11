@@ -255,5 +255,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$TAG_COMMIT" \
-            --title "FourQuadrants GPUI $VERSION" \
+            --title "肆 · ONES $VERSION" \
             --notes "Apple Silicon release for macOS 14 and later."

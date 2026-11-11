@@ -3,12 +3,12 @@
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>four-quadrants</string>
 <key>CFBundleIdentifier</key><string>com.fourquadrants.gpui</string>
-<key>CFBundleName</key><string>FourQuadrants GPUI</string>
-<key>CFBundleDisplayName</key><string>FourQuadrants GPUI</string>
+<key>CFBundleName</key><string>肆 · ONES</string>
+<key>CFBundleDisplayName</key><string>肆 · ONES</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>0.21.4</string>
-<key>CFBundleVersion</key><string>0.21.4</string>
+<key>CFBundleShortVersionString</key><string>0.21.5</string>
+<key>CFBundleVersion</key><string>0.21.5</string>
 <key>SUFeedURL</key><string>https://github.com/cod7ce/FourQuadrants-GPUI/releases/latest/download/appcast.xml</string>
 <key>SUPublicEDKey</key><string>4sEHtBRLTSo7+LWLv6Hl0gXlitgjKowy/Oh11tNa/cw=</string>
 <key>SUEnableAutomaticChecks</key><false/>

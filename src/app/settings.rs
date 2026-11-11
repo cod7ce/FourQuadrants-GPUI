@@ -2267,7 +2267,7 @@ impl Workspace {
             .child(img(ImageSource::Resource(Resource::Embedded("app-icon.png".into()))).size(px(64.)).flex_shrink_0().object_fit(ObjectFit::Contain))
             .child(div().flex().flex_col().gap_1()
                 .child(div().flex().flex_wrap().items_center().gap_2()
-                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.t("肆", "Four Quadrants")))
+                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(crate::APP_NAME))
                     .child(div().px_2().py(px(2.)).rounded(px(4.)).border_1().border_color(p.border).bg(p.subtle).text_size(px(10.)).text_color(p.muted).child("GPUI")))
                 .child(div().text_size(px(13.)).text_color(p.muted).child(format!("{} {}", self.t("版本", "Version"), env!("CARGO_PKG_VERSION"))))))
         .child(div().flex().flex_col().gap_2().p_4().rounded(px(6.)).border_1().border_color(p.border).bg(p.surface)

@@ -5,9 +5,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.fourquadrants.gpui.native-helper</string>
     <key>CFBundleName</key>
-    <string>Four Quadrants Helper</string>
+    <string>肆 · ONES Helper</string>
     <key>CFBundleDisplayName</key>
-    <string>Four Quadrants Helper</string>
+    <string>肆 · ONES Helper</string>
     <key>CFBundleExecutable</key>
     <string>four-quadrants-helper</string>
     <key>CFBundlePackageType</key>

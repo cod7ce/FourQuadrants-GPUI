@@ -10,6 +10,8 @@ use gpui_component::Root;
 use gpui_component_assets::Assets as ComponentAssets;
 use std::borrow::Cow;
 
+const APP_NAME: &str = "肆 · ONES";
+
 actions!(application, [Quit, CloseWindow]);
 
 struct ApplicationWorkspace {
@@ -375,15 +377,15 @@ fn cli() -> anyhow::Result<()> {
         let en = doc.settings.language == "en";
         cx.set_menus(vec![
             Menu {
-                name: "FourQuadrants".into(),
+                name: APP_NAME.into(),
                 items: vec![
                     MenuItem::action("Settings…", MenuCommand::Settings),
                     MenuItem::separator(),
                     MenuItem::action(
                         if en {
-                            "Quit FourQuadrants"
+                            "Quit 肆 · ONES"
                         } else {
-                            "退出 FourQuadrants"
+                            "退出 肆 · ONES"
                         },
                         MenuCommand::Quit,
                     ),
@@ -441,7 +443,7 @@ fn cli() -> anyhow::Result<()> {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("FourQuadrants".into()),
+                    title: Some(APP_NAME.into()),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(16.), px(12.))),
                 }),

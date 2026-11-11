@@ -1961,7 +1961,7 @@ impl Workspace {
                             div()
                                 .text_size(px(15.))
                                 .font_weight(FontWeight::BOLD)
-                                .child(self.t("肆", "Four Quadrants").to_string()),
+                                .child(crate::APP_NAME),
                         ),
                 )
                 .child(

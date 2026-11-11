@@ -1068,7 +1068,7 @@ impl Workspace {
                         ..Default::default()
                     },
                     move |window, cx| {
-                        window.set_window_title("Island · FourQuadrants");
+                        window.set_window_title("Island · 肆 · ONES");
                         let handle = window.window_handle();
                         owner.update(cx, |workspace, _| workspace.island = Some(handle));
                         let view = cx.new(|cx| Island::new(&owner, layout, window, cx));

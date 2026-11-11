@@ -12,7 +12,7 @@ let windows=CGWindowListCopyWindowInfo([.optionAll,.excludeDesktopElements],kCGN
 if ProcessInfo.processInfo.environment["UI_DRIVE_DEBUG"] != nil {
     for w in windows.filter({($0[kCGWindowOwnerPID as String] as? Int)==Int(pid)}) {print(w)}
 }
-guard let window=windows.first(where:{($0[kCGWindowOwnerPID as String] as? Int)==Int(pid) && ($0[kCGWindowLayer as String] as? Int)==0 && ($0[kCGWindowName as String] as? String)=="FourQuadrants"}),let bounds=window[kCGWindowBounds as String] as? [String:CGFloat] else {fatalError("Window not found")}
+guard let window=windows.first(where:{($0[kCGWindowOwnerPID as String] as? Int)==Int(pid) && ($0[kCGWindowLayer as String] as? Int)==0 && ($0[kCGWindowName as String] as? String)=="肆 · ONES"}),let bounds=window[kCGWindowBounds as String] as? [String:CGFloat] else {fatalError("Window not found")}
 func key(_ code:CGKeyCode,_ flags:CGEventFlags=[]){for down in [true,false]{let event=CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:down)!;event.flags=flags;event.postToPid(pid)};Thread.sleep(forTimeInterval:0.15)}
 switch args[2] {
 case "keys":

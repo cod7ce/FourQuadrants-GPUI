@@ -39,7 +39,8 @@ fi
 mkdir -p "$ROOT/dist"
 STAGING="$(mktemp -d "$ROOT/dist/.bundle.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
-APP="$STAGING/FourQuadrants GPUI.app"
+APP_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$ROOT/native/AppInfo.plist")"
+APP="$STAGING/$APP_NAME.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$ROOT/target/$PROFILE/four-quadrants" "$APP/Contents/MacOS/four-quadrants"
 cp "$ROOT/target/native/four-quadrants-helper" "$APP/Contents/MacOS/four-quadrants-helper"
@@ -95,7 +96,7 @@ while IFS= read -r -d '' BUNDLE; do
 done < <(find "$APP" -depth -type d \( -name '*.app' -o -name '*.xpc' -o -name '*.framework' \) -print0)
 codesign --verify --deep --strict "$APP"
 
-DESTINATION="$ROOT/dist/FourQuadrants GPUI.app"
+DESTINATION="$ROOT/dist/$APP_NAME.app"
 rm -rf "$DESTINATION"
 mv "$APP" "$DESTINATION"
 printf '%s\n' "Built: $DESTINATION ($ARCH, signing identity: ${CODE_SIGN_IDENTITY:--})"

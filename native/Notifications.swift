@@ -71,10 +71,10 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         switch settings.authorizationStatus {
         case .notDetermined:
             guard try await center.requestAuthorization(options: [.alert, .sound, .badge]) else {
-                throw HelperError("Notification permission was declined. Enable Four Quadrants Helper in System Settings > Notifications.")
+                throw HelperError("Notification permission was declined. Enable 肆 · ONES Helper in System Settings > Notifications.")
             }
         case .denied:
-            throw HelperError("Notifications are disabled. Enable Four Quadrants Helper in System Settings > Notifications.")
+            throw HelperError("Notifications are disabled. Enable 肆 · ONES Helper in System Settings > Notifications.")
         case .authorized, .provisional, .ephemeral:
             break
         @unknown default:
@@ -102,7 +102,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         guard !id.isEmpty else { throw HelperError("Notification id must not be empty.") }
         try await authorize()
         let content = UNMutableNotificationContent()
-        content.title = title.isEmpty ? "Four Quadrants" : title
+        content.title = title.isEmpty ? "肆 · ONES" : title
         content.body = body
         content.sound = .default
         let request = UNNotificationRequest(identifier: "instant-" + id, content: content, trigger: nil)
@@ -128,7 +128,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
                 continue
             }
             let content = UNMutableNotificationContent()
-            content.title = reminder.task.title.isEmpty ? "Four Quadrants" : reminder.task.title
+            content.title = reminder.task.title.isEmpty ? "肆 · ONES" : reminder.task.title
             content.body = reminder.task.notes ?? ""
             content.subtitle = reminder.task.issueKey ?? ""
             content.sound = .default

@@ -55,7 +55,7 @@ for path in sys.argv[2:]:
     if source_info is None:
         source_info = info
     else:
-        for key in ("SUPublicEDKey", "LSMinimumSystemVersion", "SUFeedURL", "CFBundleIdentifier"):
+        for key in ("SUPublicEDKey", "LSMinimumSystemVersion", "SUFeedURL", "CFBundleIdentifier", "CFBundleName", "CFBundleDisplayName"):
             if info.get(key) != source_info.get(key):
                 raise SystemExit(f"{path}: {key} differs from native/AppInfo.plist; rebuild the bundle.")
 print(version[1])
@@ -72,7 +72,8 @@ fi
 if [[ "${2:-}" != --skip-build ]]; then
   bash "$ROOT/scripts/bundle.sh" release
 fi
-APP="$ROOT/dist/FourQuadrants GPUI.app"
+APP_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$ROOT/native/AppInfo.plist")"
+APP="$ROOT/dist/$APP_NAME.app"
 if [[ ! -d "$APP" ]]; then
   printf '%s\n' "Missing bundle: $APP" >&2
   exit 1
@@ -136,12 +137,12 @@ sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 ET.register_namespace("sparkle", sparkle)
 rss = ET.Element("rss", {"version": "2.0"})
 channel = ET.SubElement(rss, "channel")
-ET.SubElement(channel, "title").text = "FourQuadrants GPUI Updates"
+ET.SubElement(channel, "title").text = info["CFBundleDisplayName"] + " 更新"
 ET.SubElement(channel, "link").text = feed_url
-ET.SubElement(channel, "description").text = "FourQuadrants GPUI for Apple Silicon Macs"
-ET.SubElement(channel, "language").text = "en"
+ET.SubElement(channel, "description").text = info["CFBundleDisplayName"] + "，适用于 Apple Silicon Mac"
+ET.SubElement(channel, "language").text = "zh-CN"
 item = ET.SubElement(channel, "item")
-ET.SubElement(item, "title").text = f"FourQuadrants GPUI {info['CFBundleShortVersionString']}"
+ET.SubElement(item, "title").text = f"{info['CFBundleDisplayName']} {info['CFBundleShortVersionString']}"
 ET.SubElement(item, "pubDate").text = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
 ET.SubElement(item, f"{{{sparkle}}}version").text = info["CFBundleVersion"]
 ET.SubElement(item, f"{{{sparkle}}}shortVersionString").text = info["CFBundleShortVersionString"]
