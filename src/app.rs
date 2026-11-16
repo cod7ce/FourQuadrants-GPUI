@@ -83,6 +83,47 @@ struct DragTask {
     hint: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskDropZone {
+    Before,
+    Inside,
+    After,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskRowDropMode {
+    ReorderAndNest,
+    NestOnly,
+}
+
+fn drop_zone(relative_y: Pixels, height: Pixels) -> TaskDropZone {
+    let edge = px(10.);
+    if height < edge * 3. {
+        TaskDropZone::Inside
+    } else if relative_y <= edge {
+        TaskDropZone::Before
+    } else if relative_y >= height - edge {
+        TaskDropZone::After
+    } else {
+        TaskDropZone::Inside
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TaskDropTarget {
+    source_id: String,
+    target_id: String,
+    zone: TaskDropZone,
+    valid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskContainerTarget {
+    Quadrant(usize),
+    AgendaDay(NaiveDate),
+    CalendarDay(NaiveDate),
+}
+
 struct DragPreview {
     task: DragTask,
     offset: Point<Pixels>,
@@ -96,9 +137,9 @@ impl Render for DragPreview {
                 .absolute()
                 // GPUI subtracts the original grip offset; compensate inside a
                 // wrapper, since the root's own position is supplied by GPUI.
-                .left(self.offset.x + px(16.))
-                .top(self.offset.y + px(16.))
-                .w(px(260.))
+                .left(self.offset.x + px(20.))
+                .top(self.offset.y + px(20.))
+                .w(px(252.))
                 .px(px(12.))
                 .py(px(10.))
                 .rounded(px(8.))
@@ -143,7 +184,12 @@ impl Render for DragPreview {
                     "drag-lift",
                     Animation::new(std::time::Duration::from_millis(140))
                         .with_easing(ease_out_quint()),
-                    |el, progress| el.opacity(0.55 + 0.45 * progress),
+                    |el, progress| {
+                        el.opacity(0.55 + 0.45 * progress)
+                            .w(px(252. + 8. * progress))
+                            .ml(px(-4. * progress))
+                            .mt(px(-4. * progress))
+                    },
                 ),
         )
     }
@@ -159,6 +205,8 @@ fn start_task_drag(
     let _ = workspace.update(cx, |this, cx| {
         this.focus.focus(window);
         this.dragging_task = Some(task.id.clone());
+        this.task_drop_target = None;
+        this.task_container_target = None;
         cx.notify();
     });
     cx.new(|_| DragPreview {
@@ -198,6 +246,8 @@ pub struct Workspace {
     collapsed: HashSet<String>,
     sidebar_overlay: bool,
     dragging_task: Option<String>,
+    task_drop_target: Option<TaskDropTarget>,
+    task_container_target: Option<TaskContainerTarget>,
     confetti: confetti::Confetti,
     background_key: String,
     background_render: Option<PathBuf>,
@@ -749,6 +799,8 @@ impl Workspace {
             collapsed: HashSet::new(),
             sidebar_overlay: false,
             dragging_task: None,
+            task_drop_target: None,
+            task_container_target: None,
             confetti: confetti::Confetti::default(),
             background_key: String::new(),
             background_render: None,
@@ -1430,7 +1482,13 @@ impl Workspace {
 
     fn visible(&self, task: &Task, cx: &App) -> bool {
         if self.doc.settings.hide_completed && self.grouped_as_completed(task) {
-            return false;
+            // Keep a completed ancestor as hierarchy context when it contains
+            // a visible unfinished descendant.
+            return self
+                .doc
+                .children(&task.id)
+                .iter()
+                .any(|child| self.visible(child, cx));
         }
         if let Some(tag) = &self.tag_filter
             && !matches_tag_week(task, tag, self.week)
@@ -1638,6 +1696,280 @@ impl Workspace {
             })
     }
 
+    fn can_drop_inside(&self, source: &str, target: &str) -> bool {
+        self.doc.validate_reparent(source, Some(target)).is_ok()
+    }
+
+    fn task_drop_target(&self, source: &str, target: &str, zone: TaskDropZone) -> TaskDropTarget {
+        let valid = match zone {
+            TaskDropZone::Before | TaskDropZone::After => self.can_drop_before(source, target),
+            TaskDropZone::Inside => self.can_drop_inside(source, target),
+        };
+        TaskDropTarget {
+            source_id: source.to_owned(),
+            target_id: target.to_owned(),
+            zone,
+            valid,
+        }
+    }
+
+    fn update_task_drop_target(
+        &mut self,
+        target: &str,
+        mode: TaskRowDropMode,
+        event: &DragMoveEvent<DragTask>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            return;
+        }
+        let source = event.drag(cx).id.clone();
+        let mut changed = self.task_container_target.take().is_some();
+        if source == target {
+            changed |= self.task_drop_target.take().is_some();
+            if changed {
+                cx.notify();
+            }
+            return;
+        }
+        let zone = match mode {
+            TaskRowDropMode::ReorderAndNest => {
+                let relative_y = event.event.position.y - event.bounds.top();
+                drop_zone(relative_y, event.bounds.size.height)
+            }
+            TaskRowDropMode::NestOnly => TaskDropZone::Inside,
+        };
+        let next = self.task_drop_target(&source, target, zone);
+        if self.task_drop_target.as_ref() != Some(&next) {
+            self.task_drop_target = Some(next);
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn update_task_container_target(
+        &mut self,
+        target: TaskContainerTarget,
+        event: &DragMoveEvent<DragTask>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            return;
+        }
+        let source = event.drag(cx).id.clone();
+        if self.doc.task(&source).is_none() {
+            return;
+        }
+        let mut changed = self.task_drop_target.take().is_some();
+        if self.task_container_target != Some(target) {
+            self.task_container_target = Some(target);
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn finish_task_drop(&mut self, source: &str, cx: &mut Context<Self>) {
+        let drop = self.task_drop_target.take();
+        self.task_container_target = None;
+        self.dragging_task = None;
+        let Some(drop) = drop.filter(|drop| drop.valid && drop.source_id == source) else {
+            cx.notify();
+            return;
+        };
+        let target = drop.target_id;
+        match drop.zone {
+            TaskDropZone::Before => {
+                self.change(cx, |doc| doc.reorder(source, &target));
+            }
+            TaskDropZone::Inside => {
+                self.change(cx, |doc| doc.reparent(source, Some(&target)));
+            }
+            TaskDropZone::After => {
+                self.change(cx, |doc| doc.reorder_after(source, &target));
+            }
+        }
+    }
+
+    fn clear_task_drag(&mut self) {
+        self.dragging_task = None;
+        self.task_drop_target = None;
+        self.task_container_target = None;
+    }
+
+    fn clear_task_drop_feedback(&mut self, cx: &mut Context<Self>) {
+        let changed = self.task_drop_target.take().is_some();
+        let container_changed = self.task_container_target.take().is_some();
+        if changed || container_changed {
+            cx.notify();
+        }
+    }
+
+    fn task_drop_inside_overlay(
+        &self,
+        drop: &TaskDropTarget,
+        p: Palette,
+        animation_key: &str,
+    ) -> AnyElement {
+        let color = if drop.valid { p.accent } else { p.quadrant[0] };
+        div()
+            .absolute()
+            .inset_0()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(color.opacity(0.72))
+            .bg(color.opacity(0.09))
+            .with_animation(
+                SharedString::from(format!("task-drop-inside-{animation_key}")),
+                Animation::new(std::time::Duration::from_millis(120)).with_easing(ease_out_quint()),
+                |el, progress| el.opacity(progress),
+            )
+            .into_any_element()
+    }
+
+    fn task_drop_line(&self, drop: &TaskDropTarget, p: Palette, animation_key: &str) -> AnyElement {
+        let before = drop.zone == TaskDropZone::Before;
+        let color = if drop.valid { p.accent } else { p.quadrant[0] };
+        let mut line = div()
+            .absolute()
+            .left(px(8.))
+            .right(px(8.))
+            .h(px(2.))
+            .rounded_full()
+            .bg(color);
+        line = if before {
+            line.top(px(-1.))
+        } else {
+            line.bottom(px(-2.))
+        };
+        line.with_animation(
+            SharedString::from(format!("task-drop-line-{animation_key}-{before}")),
+            Animation::new(std::time::Duration::from_millis(120)).with_easing(ease_out_quint()),
+            |el, progress| el.h(px(2. * progress)).opacity(progress),
+        )
+        .into_any_element()
+    }
+
+    fn task_drop_badge(
+        &self,
+        drop: &TaskDropTarget,
+        p: Palette,
+        animation_key: &str,
+    ) -> AnyElement {
+        let (color, label) = if drop.valid {
+            (p.accent, self.t("松手设为子任务", "Drop to make subtask"))
+        } else {
+            (p.quadrant[0], self.t("不能放到这里", "Can't drop here"))
+        };
+        div()
+            .absolute()
+            .right(px(8.))
+            .top(px(7.))
+            .rounded_full()
+            .bg(color)
+            .px(px(8.))
+            .py(px(2.))
+            .text_size(px(10.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(p.accent_text)
+            .child(label)
+            .with_animation(
+                SharedString::from(format!("task-drop-badge-{animation_key}")),
+                Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out_quint()),
+                |el, progress| el.opacity(progress).mt(px(3. * (1. - progress))),
+            )
+            .into_any_element()
+    }
+
+    fn task_container_drop_overlay(&self, target: TaskContainerTarget, p: Palette) -> AnyElement {
+        let label = match target {
+            TaskContainerTarget::Quadrant(_) => Some(self.t("松手移到此象限", "Drop to move here")),
+            TaskContainerTarget::AgendaDay(_) => {
+                Some(self.t("松手安排到这一天", "Drop to schedule"))
+            }
+            TaskContainerTarget::CalendarDay(_) => None,
+        };
+        let key = match target {
+            TaskContainerTarget::Quadrant(quadrant) => format!("quadrant-{quadrant}"),
+            TaskContainerTarget::AgendaDay(date) => {
+                format!("agenda-day-{}", date.num_days_from_ce())
+            }
+            TaskContainerTarget::CalendarDay(date) => {
+                format!("calendar-day-{}", date.num_days_from_ce())
+            }
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .border_2()
+            .border_color(p.accent.opacity(0.78))
+            .bg(p.accent.opacity(0.08))
+            .when_some(label, |el, label| {
+                el.child(
+                    div()
+                        .absolute()
+                        .right(px(8.))
+                        .top(px(8.))
+                        .rounded_full()
+                        .bg(p.accent)
+                        .px_2()
+                        .py(px(2.))
+                        .text_size(px(10.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.accent_text)
+                        .child(label),
+                )
+            })
+            .with_animation(
+                SharedString::from(format!("task-container-drop-{key}")),
+                Animation::new(std::time::Duration::from_millis(130)).with_easing(ease_out_quint()),
+                |el, progress| el.opacity(progress),
+            )
+            .into_any_element()
+    }
+
+    fn task_drag_hint(
+        &self,
+        zh: &'static str,
+        en: &'static str,
+        animation_key: &'static str,
+        p: Palette,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .top(px(8.))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .rounded_full()
+                    .max_w(relative(0.92))
+                    .border_1()
+                    .border_color(p.accent.opacity(0.45))
+                    .shadow_md()
+                    .bg(p.bg.opacity(0.96))
+                    .px_3()
+                    .py_1()
+                    .whitespace_normal()
+                    .text_center()
+                    .text_size(px(11.))
+                    .text_color(p.text)
+                    .child(self.t(zh, en))
+                    .with_animation(
+                        SharedString::from(format!("task-drag-hint-{animation_key}")),
+                        Animation::new(std::time::Duration::from_millis(180))
+                            .with_easing(ease_out_quint()),
+                        |el, progress| el.opacity(progress).mt(px(4. * (1. - progress))),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn row(
         &self,
         task: &Task,
@@ -1650,10 +1982,29 @@ impl Workspace {
         let toggle = id.clone();
         let open = id.clone();
         let fold = id.clone();
-        let reorder = id.clone();
         let target = id.clone();
+        let source_dragging = cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id);
+        let source_animation_id =
+            SharedString::from(format!("task-drag-source-{id}-{source_dragging}"));
         let workspace = cx.entity().downgrade();
-        let drop_workspace = workspace.clone();
+        let drop_target = self
+            .task_drop_target
+            .as_ref()
+            .filter(|drop| {
+                cx.has_active_drag()
+                    && self.dragging_task.as_deref() == Some(drop.source_id.as_str())
+                    && drop.target_id == id
+            })
+            .cloned();
+        let drop_inside = drop_target
+            .as_ref()
+            .filter(|drop| drop.zone == TaskDropZone::Inside);
+        let drop_line = drop_target
+            .as_ref()
+            .filter(|drop| drop.zone != TaskDropZone::Inside);
+        let invalid_drop_line = drop_target
+            .as_ref()
+            .filter(|drop| drop.zone != TaskDropZone::Inside && !drop.valid);
         let direct_children = self.doc.children(&id);
         let child_count = direct_children.len();
         let completed_children = direct_children
@@ -1666,8 +2017,7 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         let is_collapsed = self.collapsed.contains(&id);
-        let show_children =
-            !is_collapsed && !self.grouped_as_completed(task) && !children.is_empty();
+        let show_children = !is_collapsed && !children.is_empty();
         let branch_y = px(8.) + window.rem_size() * (0.875 * 1.45 / 2.);
         let child_indent = px(TASK_CHECKBOX_SIZE + TASK_TITLE_GAP);
         let branch_width = child_indent - px(TASK_CHECKBOX_SIZE / 2. + TASK_CONNECTOR_GAP);
@@ -1689,10 +2039,6 @@ impl Workspace {
             .flex_col()
             .min_w_0()
             .flex_shrink_0()
-            .when(
-                cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id),
-                |el| el.opacity(0.4),
-            )
             .child(
                 div()
                     .relative()
@@ -1700,6 +2046,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(SharedString::from(format!("task-{id}")))
+                            .relative()
                             .flex()
                             .min_w_0()
                             .items_start()
@@ -1712,17 +2059,16 @@ impl Workspace {
                             .cursor_pointer()
                             .map(|row| task_focus::style(row, &id, &self.doc, p))
                             .border_t_2()
-                            .can_drop(move |value, _, cx| {
-                                value.downcast_ref::<DragTask>().is_some_and(|drag| {
-                                    drop_workspace.upgrade().is_some_and(|workspace| {
-                                        let this = workspace.read(cx);
-                                        this.can_drop_before(&drag.id, &target)
-                                    })
-                                })
-                            })
-                            .drag_over::<DragTask>(move |style, _, _, _| {
-                                style.bg(p.accent.opacity(0.10)).border_color(p.accent)
-                            })
+                            .on_drag_move(cx.listener(
+                                move |this, event: &DragMoveEvent<DragTask>, _, cx| {
+                                    this.update_task_drop_target(
+                                        &target,
+                                        TaskRowDropMode::ReorderAndNest,
+                                        event,
+                                        cx,
+                                    );
+                                },
+                            ))
                             .on_click(cx.listener(move |this, event, window, cx| {
                                 this.activate_task(&open, event, window, cx);
                             }))
@@ -1732,8 +2078,10 @@ impl Workspace {
                                     title: task.title.clone(),
                                     color: p.quadrant[task.quadrant()],
                                     palette: p,
-                                    hint: self
-                                        .t("拖动任务 · Esc 取消", "Moving task · Esc to cancel"),
+                                    hint: self.t(
+                                        "拖动中 · 松开放置 · Esc 取消",
+                                        "Moving · Drop to place · Esc to cancel",
+                                    ),
                                 },
                                 move |drag, offset, window, cx| {
                                     start_task_drag(&workspace, drag, offset, window, cx)
@@ -1741,11 +2089,15 @@ impl Workspace {
                             )
                             .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
                                 cx.stop_propagation();
-                                let source = drag.id.clone();
-                                if this.can_drop_before(&source, &reorder) {
-                                    this.change(cx, |doc| doc.reorder(&source, &reorder));
-                                }
+                                this.finish_task_drop(&drag.id, cx);
                             }))
+                            .when_some(drop_inside, |el, drop| {
+                                el.child(self.task_drop_inside_overlay(
+                                    drop,
+                                    p,
+                                    &format!("row-{id}"),
+                                ))
+                            })
                             .child(
                                 task_checkbox(
                                     SharedString::from(format!("complete-{id}")),
@@ -1854,6 +2206,15 @@ impl Workspace {
                             TaskConnector::Stem { top: stem_top },
                             branch_color,
                         ))
+                    })
+                    .when_some(drop_line, |el, drop| {
+                        el.child(self.task_drop_line(drop, p, &format!("row-{id}")))
+                    })
+                    .when_some(drop_inside, |el, drop| {
+                        el.child(self.task_drop_badge(drop, p, &format!("row-{id}")))
+                    })
+                    .when_some(invalid_drop_line, |el, drop| {
+                        el.child(self.task_drop_badge(drop, p, &format!("row-{id}")))
                     }),
             )
             .when(show_children, |el| {
@@ -1882,6 +2243,17 @@ impl Workspace {
                         })),
                 )
             })
+            .with_animation(
+                source_animation_id,
+                Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out_quint()),
+                move |el, progress| {
+                    el.opacity(if source_dragging {
+                        1. - 0.58 * progress
+                    } else {
+                        1.
+                    })
+                },
+            )
             .into_any_element()
     }
 
@@ -2706,6 +3078,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let p = self.palette(window);
         let stacked = size.width < px(840.);
         let mut board = div()
             .id(if stacked {
@@ -2713,13 +3086,22 @@ impl Workspace {
             } else {
                 "board-grid"
             })
+            .relative()
             .w(size.width)
             .h(size.height)
             .flex()
             .flex_col()
             .gap_3()
             .p_4()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .when(cx.has_active_drag() && self.dragging_task.is_some(), |el| {
+                el.child(self.task_drag_hint(
+                    "拖到中央：设为子任务 · 拖到上下边缘：调整顺序 · 拖入象限：移动任务",
+                    "Drop in the middle: make subtask · Drop at edges: reorder · Drop in a quadrant: move task",
+                    "board",
+                    p,
+                ))
+            });
         if stacked {
             board = board.children(
                 [0, 2, 1, 3]
@@ -2781,8 +3163,13 @@ impl Workspace {
             .iter()
             .filter(|task| self.grouped_as_completed(task))
             .count();
+        let container_drop = self
+            .task_container_target
+            .filter(|_| cx.has_active_drag())
+            .filter(|target| *target == TaskContainerTarget::Quadrant(q));
         div()
             .id(("quadrant", q))
+            .relative()
             .when(stacked, |el| el.w_full().flex_shrink_0())
             .when(!stacked, |el| el.flex_1())
             .min_w_0()
@@ -2793,11 +3180,14 @@ impl Workspace {
             .border_color(p.border)
             .bg(p.surface)
             .overflow_hidden()
-            .drag_over::<DragTask>(move |style, _, _, _| {
-                style.bg(p.accent.opacity(0.10)).border_color(p.accent)
-            })
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DragTask>, _, cx| {
+                    this.update_task_container_target(TaskContainerTarget::Quadrant(q), event, cx);
+                }),
+            )
             .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
                 cx.stop_propagation();
+                this.clear_task_drag();
                 let week = this.week;
                 let id = drag.id.clone();
                 this.change(cx, |doc| {
@@ -2892,6 +3282,9 @@ impl Workspace {
                             .map(|task| self.row(task, 0, window, cx)),
                     ),
             )
+            .when_some(container_drop, |el, target| {
+                el.child(self.task_container_drop_overlay(target, p))
+            })
             .into_any_element()
     }
 
@@ -2939,13 +3332,13 @@ impl Workspace {
                     .overflow_scroll()
                     .children(tasks.iter().map(|task| {
                         let id = task.id.clone();
+                        let source_dragging =
+                            cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id);
+                        let source_animation_id =
+                            SharedString::from(format!("inbox-drag-source-{id}-{source_dragging}"));
                         let workspace = cx.entity().downgrade();
                         div()
                             .id(SharedString::from(format!("inbox-{id}")))
-                            .when(
-                                cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id),
-                                |el| el.opacity(0.4),
-                            )
                             .w(px(200.))
                             .flex_shrink_0()
                             .p(px(10.))
@@ -2973,8 +3366,10 @@ impl Workspace {
                                     title: task.title.clone(),
                                     color: p.quadrant[task.quadrant()],
                                     palette: p,
-                                    hint: self
-                                        .t("拖动任务 · Esc 取消", "Moving task · Esc to cancel"),
+                                    hint: self.t(
+                                        "拖动中 · 松开放置 · Esc 取消",
+                                        "Moving · Drop to place · Esc to cancel",
+                                    ),
                                 },
                                 move |drag, offset, window, cx| {
                                     start_task_drag(&workspace, drag, offset, window, cx)
@@ -2983,6 +3378,18 @@ impl Workspace {
                             .on_click(cx.listener(move |this, event, window, cx| {
                                 this.activate_task(&id, event, window, cx)
                             }))
+                            .with_animation(
+                                source_animation_id,
+                                Animation::new(std::time::Duration::from_millis(140))
+                                    .with_easing(ease_out_quint()),
+                                move |el, progress| {
+                                    el.opacity(if source_dragging {
+                                        1. - 0.58 * progress
+                                    } else {
+                                        1.
+                                    })
+                                },
+                            )
                     })),
             )
             .into_any_element()
@@ -3163,9 +3570,14 @@ impl Workspace {
                 .collect::<Vec<_>>();
             tasks.sort_by(order);
             // List descendants independently under their own scheduled day.
+            let container_drop = self
+                .task_container_target
+                .filter(|_| cx.has_active_drag())
+                .filter(|target| *target == TaskContainerTarget::AgendaDay(date));
             body = body.child(
                 div()
                     .id(("day", offset))
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_shrink_0()
@@ -3179,15 +3591,21 @@ impl Workspace {
                         p.border
                     })
                     .bg(p.surface)
-                    .when(date < model::today(), |el| el.opacity(0.5))
-                    .drag_over::<DragTask>(move |style, _, _, _| {
-                        style
-                            .opacity(1.)
-                            .bg(p.accent.opacity(0.10))
-                            .border_color(p.accent)
+                    .when(date < model::today() && container_drop.is_none(), |el| {
+                        el.opacity(0.5)
                     })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<DragTask>, _, cx| {
+                            this.update_task_container_target(
+                                TaskContainerTarget::AgendaDay(date),
+                                event,
+                                cx,
+                            );
+                        },
+                    ))
                     .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
                         cx.stop_propagation();
+                        this.clear_task_drag();
                         let id = drag.id.clone();
                         this.change(cx, |doc| {
                             doc.schedule(&id, date);
@@ -3221,10 +3639,28 @@ impl Workspace {
                                     ),
                                 )
                             }),
-                    ),
+                    )
+                    .when_some(container_drop, |el, target| {
+                        el.child(self.task_container_drop_overlay(target, p))
+                    }),
             );
         }
-        body.into_any_element()
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(body)
+            .when(cx.has_active_drag() && self.dragging_task.is_some(), |el| {
+                el.child(self.task_drag_hint(
+                    "拖到任务中央：设为子任务 · 拖到日期卡片：调整排期",
+                    "Drop in the middle: make subtask · Drop on a day: reschedule",
+                    "agenda",
+                    p,
+                ))
+            })
+            .into_any_element()
     }
 
     fn flat_row(&self, task: &Task, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -3232,30 +3668,53 @@ impl Workspace {
         let id = task.id.clone();
         let toggle = id.clone();
         let open = id.clone();
+        let target = id.clone();
+        let is_subtask = task.parent_id.is_some();
+        let source_dragging = cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id);
+        let source_animation_id =
+            SharedString::from(format!("flat-drag-source-{id}-{source_dragging}"));
         let workspace = cx.entity().downgrade();
+        let drop_target = self
+            .task_drop_target
+            .as_ref()
+            .filter(|drop| {
+                cx.has_active_drag()
+                    && self.dragging_task.as_deref() == Some(drop.source_id.as_str())
+                    && drop.target_id == id
+            })
+            .cloned();
+        let drop_inside = drop_target
+            .as_ref()
+            .filter(|drop| drop.zone == TaskDropZone::Inside);
         div()
             .id(SharedString::from(format!("flat-{id}")))
-            .when(
-                cx.has_active_drag() && self.dragging_task.as_deref() == Some(&id),
-                |el| el.opacity(0.4),
-            )
+            .relative()
             .flex()
             .min_w_0()
             .flex_shrink_0()
             .gap(px(6.))
             .items_start()
-            .px_2()
+            .pl(px(if is_subtask { 17. } else { 8. }))
+            .pr_2()
             .py_2()
             .rounded(px(4.))
             .map(|row| task_focus::style(row, &id, &self.doc, p))
             .cursor_pointer()
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DragTask>, _, cx| {
+                    this.update_task_drop_target(&target, TaskRowDropMode::NestOnly, event, cx);
+                }),
+            )
             .on_drag(
                 DragTask {
-                    id,
+                    id: id.clone(),
                     title: task.title.clone(),
                     color: p.quadrant[task.quadrant()],
                     palette: p,
-                    hint: self.t("拖动任务 · Esc 取消", "Moving task · Esc to cancel"),
+                    hint: self.t(
+                        "拖动中 · 松开放置 · Esc 取消",
+                        "Moving · Drop to place · Esc to cancel",
+                    ),
                 },
                 move |drag, offset, window, cx| {
                     start_task_drag(&workspace, drag, offset, window, cx)
@@ -3264,6 +3723,23 @@ impl Workspace {
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.activate_task(&open, event, window, cx);
             }))
+            .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
+                cx.stop_propagation();
+                this.finish_task_drop(&drag.id, cx);
+            }))
+            .when_some(drop_inside, |el, drop| {
+                el.child(self.task_drop_inside_overlay(drop, p, &format!("flat-{id}")))
+            })
+            .when(is_subtask, |el| {
+                el.child(
+                    div()
+                        .mt(px(4.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child("↳"),
+                )
+            })
             .child(
                 task_checkbox(
                     SharedString::from(format!("flat-toggle-{toggle}")),
@@ -3299,6 +3775,20 @@ impl Workspace {
                     .flex_shrink_0()
                     .rounded_full()
                     .bg(p.quadrant[task.quadrant()]),
+            )
+            .when_some(drop_inside, |el, drop| {
+                el.child(self.task_drop_badge(drop, p, &format!("flat-{id}")))
+            })
+            .with_animation(
+                source_animation_id,
+                Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out_quint()),
+                move |el, progress| {
+                    el.opacity(if source_dragging {
+                        1. - 0.58 * progress
+                    } else {
+                        1.
+                    })
+                },
             )
             .into_any_element()
     }
@@ -3336,6 +3826,7 @@ impl Render for Workspace {
                 // Search results include matching descendants independently.
                 let mut list = div()
                     .id("all-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -3367,6 +3858,14 @@ impl Render for Workspace {
                         ),
                     );
                 }
+                if cx.has_active_drag() && self.dragging_task.is_some() {
+                    list = list.child(self.task_drag_hint(
+                        "拖到任务中央：设为子任务",
+                        "Drop in the middle: make subtask",
+                        "all",
+                        p,
+                    ));
+                }
                 list.into_any_element()
             }
         };
@@ -3375,6 +3874,9 @@ impl Render for Workspace {
             .key_context("Workspace")
             .track_focus(&self.focus)
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_drag_move(cx.listener(|this, _: &DragMoveEvent<DragTask>, _, cx| {
+                this.clear_task_drop_feedback(cx);
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -3390,6 +3892,8 @@ impl Render for Workspace {
                 if event.keystroke.key == "escape" {
                     if cx.stop_active_drag(window) {
                         this.dragging_task = None;
+                        this.task_drop_target = None;
+                        this.task_container_target = None;
                         cx.stop_propagation();
                         cx.notify();
                         return;
@@ -3446,6 +3950,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
                 if cx.stop_active_drag(window) {
                     this.dragging_task = None;
+                    this.task_drop_target = None;
+                    this.task_container_target = None;
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -3843,11 +4349,26 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        WeeklyGroup, matches_tag_week, week_completion, week_labels, weekly_days, weekly_group,
-        weekly_order,
+        TaskDropZone, WeeklyGroup, drop_zone, matches_tag_week, week_completion, week_labels,
+        weekly_days, weekly_group, weekly_order,
     };
     use crate::model::{Document, Task};
     use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
+    use gpui::px;
+
+    #[test]
+    fn task_rows_expose_edges_for_reordering_and_middle_for_nesting() {
+        assert_eq!(drop_zone(px(0.), px(44.)), TaskDropZone::Before);
+        assert_eq!(drop_zone(px(10.), px(44.)), TaskDropZone::Before);
+        assert_eq!(drop_zone(px(11.), px(44.)), TaskDropZone::Inside);
+        assert_eq!(drop_zone(px(22.), px(44.)), TaskDropZone::Inside);
+        assert_eq!(drop_zone(px(34.), px(44.)), TaskDropZone::After);
+        assert_eq!(drop_zone(px(43.), px(44.)), TaskDropZone::After);
+        // Compact rows remain a nesting target instead of becoming an
+        // unstable sequence of tiny edge zones.
+        assert_eq!(drop_zone(px(0.), px(24.)), TaskDropZone::Inside);
+        assert_eq!(drop_zone(px(23.), px(24.)), TaskDropZone::Inside);
+    }
 
     #[test]
     fn hiding_completed_days_keeps_today_and_future_days_across_week_boundaries() {

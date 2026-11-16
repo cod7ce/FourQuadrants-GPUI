@@ -831,6 +831,7 @@ impl Document {
     /// subtree follows the new parent's week, keeping its own tags and quadrants.
     /// Cycles and depth > 3 are errors.
     pub fn reparent(&mut self, id: &str, parent: Option<&str>) -> Result<()> {
+        self.validate_reparent(id, parent)?;
         let target_idx = self
             .index_of(id)
             .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
@@ -840,23 +841,10 @@ impl Document {
         }
 
         if let Some(parent_id) = parent {
-            ensure!(parent_id != id, "a task cannot be its own parent");
-            let parent_idx = self
-                .index_of(parent_id)
-                .ok_or_else(|| anyhow::anyhow!("parent task {parent_id} not found"))?;
-            ensure!(
-                !self.is_in_subtree(parent_id, id)?,
-                "cannot reparent task {id} below its own descendant {parent_id}"
-            );
-
-            let parent_depth = self.depth_of(parent_id)?;
-            let height = self.subtree_height(id)?;
-            ensure!(
-                parent_depth + height <= MAX_TASK_DEPTH,
-                "reparenting {id} would exceed the maximum task depth of {MAX_TASK_DEPTH}"
-            );
-
-            let parent_week = self.tasks[parent_idx].week_start;
+            let parent_week = self
+                .task(parent_id)
+                .expect("parent was checked by validate_reparent")
+                .week_start;
             let next_order = self.next_sort_order(Some(parent_id));
             self.tasks[target_idx].parent_id = Some(parent_id.to_string());
             self.tasks[target_idx].sort_order = next_order;
@@ -865,6 +853,34 @@ impl Document {
             let sort_order = self.next_sort_order(None);
             self.tasks[target_idx].parent_id = None;
             self.tasks[target_idx].sort_order = sort_order;
+        }
+        Ok(())
+    }
+
+    /// Read-only parent validation shared by reparenting and drag feedback.
+    pub fn validate_reparent(&self, id: &str, parent: Option<&str>) -> Result<()> {
+        let task = self
+            .task(id)
+            .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+        if task.parent_id.as_deref() == parent {
+            return Ok(());
+        }
+        if let Some(parent_id) = parent {
+            ensure!(parent_id != id, "a task cannot be its own parent");
+            ensure!(
+                self.task(parent_id).is_some(),
+                "parent task {parent_id} not found"
+            );
+            ensure!(
+                !self.is_in_subtree(parent_id, id)?,
+                "cannot reparent task {id} below its own descendant {parent_id}"
+            );
+            let parent_depth = self.depth_of(parent_id)?;
+            let height = self.subtree_height(id)?;
+            ensure!(
+                parent_depth + height <= MAX_TASK_DEPTH,
+                "reparenting {id} would exceed the maximum task depth of {MAX_TASK_DEPTH}"
+            );
         }
         Ok(())
     }
@@ -1002,9 +1018,19 @@ impl Document {
     /// becomes top level and adopts the target's week and quadrant. The new
     /// sibling group is reindexed from 0. Cycles and depth > 3 are errors.
     pub fn reorder(&mut self, id: &str, before: &str) -> Result<()> {
-        self.validate_reorder(id, before)?;
+        self.reorder_relative(id, before, false)
+    }
+
+    /// Reorders `id` immediately after `after` while adopting that target's
+    /// parent, week and top-level quadrant.
+    pub fn reorder_after(&mut self, id: &str, after: &str) -> Result<()> {
+        self.reorder_relative(id, after, true)
+    }
+
+    fn reorder_relative(&mut self, id: &str, target: &str, after: bool) -> Result<()> {
+        self.validate_reorder(id, target)?;
         let dragged_idx = self.index_of(id).expect("validated source");
-        let target_idx = self.index_of(before).expect("validated target");
+        let target_idx = self.index_of(target).expect("validated target");
         let new_parent = self.tasks[target_idx].parent_id.clone();
         let target_week = self.tasks[target_idx].week_start;
         let target_flags = (
@@ -1050,7 +1076,8 @@ impl Document {
         group.retain(|task_id| task_id != id);
         let insert_at = group
             .iter()
-            .position(|task_id| task_id == before)
+            .position(|task_id| task_id == target)
+            .map(|index| index + usize::from(after))
             .unwrap_or(group.len());
         group.insert(insert_at, id.to_string());
 
@@ -2534,6 +2561,10 @@ mod tests {
         let b = link_child(&mut doc, &a, "b");
         let c = link_child(&mut doc, &b, "c");
 
+        let original = doc.clone();
+        assert!(doc.validate_reparent(&a, Some(&a)).is_err());
+        assert!(doc.validate_reparent(&a, Some(&c)).is_err());
+        assert_eq!(doc, original);
         assert!(doc.reparent(&a, Some(&a)).is_err());
         assert!(doc.reparent(&a, Some(&c)).is_err());
 
@@ -2553,6 +2584,52 @@ mod tests {
 
         assert!(doc.reparent("missing", None).is_err());
         assert!(doc.reparent(&a, Some("missing")).is_err());
+    }
+
+    #[test]
+    fn reorder_after_inserts_at_the_bottom_edge_of_a_group() {
+        let (mut doc, parent) = doc_with_task("parent");
+        let first = link_child(&mut doc, &parent, "first");
+        let second = link_child(&mut doc, &parent, "second");
+        let third = link_child(&mut doc, &parent, "third");
+
+        doc.reorder_after(&third, &first).unwrap();
+        assert_eq!(
+            doc.children(&parent)
+                .iter()
+                .map(|task| task.title.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "third", "second"]
+        );
+
+        let outsider = doc.add_task("outsider", date(2026, 7, 13), 1);
+        doc.reorder_after(&outsider, &second).unwrap();
+        assert_eq!(
+            doc.task(&outsider).unwrap().parent_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(
+            doc.children(&parent)
+                .iter()
+                .map(|task| task.title.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "third", "second", "outsider"]
+        );
+
+        let target = doc.add_task("target", date(2026, 7, 13), 2);
+        let dragged = doc.add_task("dragged", date(2026, 7, 6), 3);
+        doc.reorder_after(&dragged, &target).unwrap();
+        let dragged = doc.task(&dragged).unwrap();
+        assert!(dragged.parent_id.is_none());
+        assert_eq!(dragged.week_start, date(2026, 7, 13));
+        assert_eq!(dragged.quadrant(), 2);
+        assert_eq!(dragged.sort_order, 1.0);
+        doc.validate().unwrap();
+
+        let original = doc.clone();
+        assert!(doc.reorder_after(&parent, &third).is_err());
+        assert!(doc.reorder_after(&target, &target).is_err());
+        assert_eq!(doc, original);
     }
 
     #[test]

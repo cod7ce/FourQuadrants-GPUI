@@ -166,6 +166,10 @@ impl Workspace {
                     day_tasks.len(),
                     self.t("项任务", "tasks")
                 );
+                let container_drop = self
+                    .task_container_target
+                    .filter(|_| cx.has_active_drag())
+                    .filter(|target| *target == TaskContainerTarget::CalendarDay(date));
                 cells = cells.child(
                     div()
                         .id(("date", n as usize))
@@ -196,11 +200,18 @@ impl Workspace {
                                 cx.notify();
                             }
                         }))
-                        .drag_over::<DragTask>(move |style, _, _, _| {
-                            style.bg(p.accent.opacity(0.18)).border_color(p.accent)
-                        })
+                        .on_drag_move(cx.listener(
+                            move |this, event: &DragMoveEvent<DragTask>, _, cx| {
+                                this.update_task_container_target(
+                                    TaskContainerTarget::CalendarDay(date),
+                                    event,
+                                    cx,
+                                );
+                            },
+                        ))
                         .on_drop(cx.listener(move |this, drag: &DragTask, _, cx| {
                             cx.stop_propagation();
+                            this.clear_task_drag();
                             let id = drag.id.clone();
                             this.change(cx, |doc| {
                                 doc.schedule(&id, date);
@@ -259,6 +270,9 @@ impl Workspace {
                                     .border_1()
                                     .border_color(p.accent.opacity(0.55)),
                             )
+                        })
+                        .when_some(container_drop, |el, target| {
+                            el.child(self.task_container_drop_overlay(target, p))
                         }),
                 );
             }
@@ -407,12 +421,21 @@ impl Workspace {
                 );
         div()
             .id("calendar-layout")
+            .relative()
             .w(size.width)
             .h(size.height)
             .flex()
             .when(stacked, |el| el.flex_col().overflow_y_scroll())
             .child(month)
             .child(detail)
+            .when(cx.has_active_drag() && self.dragging_task.is_some(), |el| {
+                el.child(self.task_drag_hint(
+                    "拖到任务中央：设为子任务 · 拖到日期格：调整排期",
+                    "Drop in the middle: make subtask · Drop on a date: reschedule",
+                    "calendar",
+                    p,
+                ))
+            })
             .into_any_element()
     }
 }
